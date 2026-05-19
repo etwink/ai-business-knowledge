@@ -117,7 +117,7 @@ class ProcessDocumentBuilder:
         "systems_and_components",
         "appendix",
     ]
-    _TOKENS_PER_SECTION = 4000
+    _TOKENS_PER_SECTION = 40000
 
     def __init__(self):
         self.llm = AzureLLMClient()
