@@ -216,7 +216,7 @@ Process Document:
 
     _SECTION_INSTRUCTIONS: dict = {
         "overview": (
-            "Write a high-level introduction to the complete system (300–450 words). "
+            "Write a high-level introduction to the complete system. "
             "Assume the reader knows nothing about this business or these systems. "
             "Cover: (1) the business problem this system solves and why it was built, "
             "(2) the primary business objectives it achieves, (3) who uses it and who is "
@@ -226,7 +226,7 @@ Process Document:
             "that follows — a reader should finish it understanding WHY this system exists."
         ),
         "integrated_processes": (
-            "Write a detailed, step-by-step end-to-end workflow description (500–800 words). "
+            "Write a detailed, step-by-step end-to-end workflow description. "
             "Number every step. For each step: state what happens, which program/module/person "
             "performs it, why that step is necessary, and what the output of the step is. "
             "When you first mention any program, module, or external system in a step, add a "
@@ -236,7 +236,7 @@ Process Document:
             "processing stage to the final output or outcome."
         ),
         "dependencies": (
-            "Describe all dependencies between subsystems and components (350–550 words). "
+            "Describe all dependencies between subsystems and components. "
             "Organise by subsystem. For each dependency entry: name the component that relies "
             "on another, name the component being relied upon, explain in plain English WHY "
             "this dependency exists (what would break if it were removed), and describe any "
@@ -245,7 +245,7 @@ Process Document:
             "of what it is before describing the dependency."
         ),
         "data_flow": (
-            "Describe how data moves through the entire system (400–600 words). "
+            "Describe how data moves through the entire system. "
             "For a reader who has never seen this system: explain what each input is "
             "(source, format, business meaning), how it is transformed or processed at each "
             "stage (and why that transformation is needed), where it is stored along the way "
@@ -255,7 +255,7 @@ Process Document:
         ),
         "decision_points": (
             "List and explain every significant business rule, conditional logic, and decision "
-            "point in the system (400–600 words). "
+            "point in the system. "
             "For each decision point: (1) describe in plain English the condition being "
             "evaluated, (2) explain the possible outcomes and what happens in each case, "
             "(3) explain the BUSINESS REASON this decision exists (the rule it enforces or "
@@ -265,7 +265,7 @@ Process Document:
         ),
         "systems_and_components": (
             "Provide a comprehensive, plain-language inventory of every system and component "
-            "involved (400–600 words). "
+            "involved. "
             "Organise into clearly labelled categories such as: Core Processing Programs, "
             "Shared Modules and Copybooks, Input Data Sources, Output Files and Reports, "
             "Databases and Data Stores, External Interfaces, and Batch/Scheduled Jobs. "
@@ -274,7 +274,7 @@ Process Document:
             "the system. Write as if creating a reference guide for a new team member."
         ),
         "appendix": (
-            "Create a reference appendix (400–700 words) containing the following sub-sections. "
+            "Create a reference appendix containing the following sub-sections. "
             "Each sub-section should begin with a clear heading.\n\n"
             "A. GLOSSARY — Define every technical term, acronym, system name, and "
             "domain-specific phrase used in this document. List alphabetically. "
