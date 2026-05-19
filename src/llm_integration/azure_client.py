@@ -122,7 +122,7 @@ TECHNICAL DETAILS:
 - ...
 
 Document:
-{document_content[:4000]}"""
+{document_content[:10000]}"""
 
     @staticmethod
     def build_process_document_prompt(summaries: list[str]) -> str:
