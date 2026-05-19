@@ -327,6 +327,21 @@ Write a unified subsystem summary (500–700 words) that integrates both the tec
                     "4. Overall purpose — How do the data, formulas, and macros work together "
                     "to support the larger business process?"
                 )
+            elif doc.file_type == "excel_binary":
+                focus = (
+                    "This is a binary Excel workbook (.xlsb). It contains DATA VALUES and "
+                    "optionally VBA MACROS (formula expressions are unavailable in binary format). "
+                    "Analyse every available angle:\n"
+                    "1. DATA VALUES — What data is stored? What do the numbers/text represent "
+                    "in business terms? What decisions or reports does this workbook support?\n"
+                    "2. VBA MACROS (if present) — What automation or logic do the macros "
+                    "implement? What triggers them? What inputs do they read and what outputs "
+                    "or side effects do they produce (cell writes, emails, external calls, etc.)? "
+                    "What business process do the macros automate, and what would break if "
+                    "they stopped running?\n"
+                    "3. Overall purpose — How do the data and macros work together to support "
+                    "the larger business process? Note any limitations due to the binary format."
+                )
             elif doc.file_type in ("text", "cobol"):
                 focus = (
                     "Focus on: business purpose, key logic/processes, data structures used, "

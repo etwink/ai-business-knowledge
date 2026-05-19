@@ -24,7 +24,7 @@ CODE_EXTENSIONS = {
 }
 
 WORD_EXTENSIONS = {".DOCX", ".DOC"}
-EXCEL_EXTENSIONS = {".XLSX", ".XLS", ".XLSM"}
+EXCEL_EXTENSIONS = {".XLSX", ".XLS", ".XLSM", ".XLSB"}
 
 
 @dataclass

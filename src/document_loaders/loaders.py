@@ -210,6 +210,93 @@ class MacroEnabledExcelDocumentLoader(ExcelDocumentLoader):
             return ""
 
 
+class BinaryExcelDocumentLoader(BaseDocumentLoader):
+    """Loader for Excel Binary Workbooks (.xlsb).
+
+    .xlsb files use a proprietary binary format that openpyxl cannot read.
+    - Data values are extracted via pyxlsb.
+    - Formula expressions are NOT available (stored as compiled binary).
+    - VBA macros are extracted via oletools.olevba (same as .xlsm).
+    """
+
+    _MAX_VBA_CHARS = 20_000
+
+    def load(self) -> DocumentContent:
+        self._validate_file_size()
+
+        values_text = self._extract_values()
+        vba_text = self._extract_vba()
+
+        parts = ["--- DATA VALUES (cell values as seen in Excel) ---\n" + values_text]
+        parts.append(
+            "--- FORMULAS ---\n"
+            "(Formula expressions are not available for binary .xlsb workbooks — "
+            "only computed values can be read.)"
+        )
+        if vba_text:
+            parts.append(
+                "--- VBA MACROS (automation logic embedded in the workbook) ---\n" + vba_text
+            )
+
+        return DocumentContent(
+            filename=self.file_path.name,
+            file_type="excel_binary",
+            content="\n\n".join(parts),
+            metadata={"has_vba": bool(vba_text)},
+        )
+
+    def _extract_values(self) -> str:
+        try:
+            from pyxlsb import open_workbook  # type: ignore
+        except ImportError:
+            return "(pyxlsb not installed — install it with: pip install pyxlsb)"
+
+        try:
+            sections: list[str] = []
+            with open_workbook(str(self.file_path)) as wb:
+                for sheet_name in wb.sheets:
+                    with wb.get_sheet(sheet_name) as sheet:
+                        rows: list[str] = []
+                        for row in sheet.rows():
+                            cells = [str(c.v) if c.v is not None else "" for c in row]
+                            if any(cells):
+                                rows.append(" | ".join(cells))
+                        sections.append(f"=== Sheet: {sheet_name} ===\n" + "\n".join(rows))
+            return "\n\n".join(sections) if sections else "(no data)"
+        except Exception as e:
+            return f"(error reading values: {e})"
+
+    def _extract_vba(self) -> str:
+        try:
+            from oletools.olevba import VBA_Parser  # type: ignore
+        except ImportError:
+            return ""
+
+        try:
+            vba_parser = VBA_Parser(str(self.file_path))
+            if not vba_parser.detect_vba_macros():
+                return ""
+
+            parts: list[str] = []
+            total_chars = 0
+            for (_filename, _stream_path, vba_filename, vba_code) in vba_parser.extract_macros():
+                if not vba_code or not vba_code.strip():
+                    continue
+                header = f"=== Module: {vba_filename} ==="
+                chunk = f"{header}\n{vba_code.strip()}"
+                if total_chars + len(chunk) > self._MAX_VBA_CHARS:
+                    remaining = self._MAX_VBA_CHARS - total_chars
+                    if remaining > len(header) + 20:
+                        parts.append(chunk[:remaining] + "\n... (truncated)")
+                    break
+                parts.append(chunk)
+                total_chars += len(chunk)
+            vba_parser.close()
+            return "\n\n".join(parts)
+        except Exception:
+            return ""
+
+
 class HTMLDocumentLoader(BaseDocumentLoader):
     """Loader for HTML files."""
 
@@ -271,6 +358,7 @@ def get_loader(file_path: Path) -> BaseDocumentLoader:
         '.xlsx': ExcelDocumentLoader,
         '.xls': ExcelDocumentLoader,
         '.xlsm': MacroEnabledExcelDocumentLoader,
+        '.xlsb': BinaryExcelDocumentLoader,
         '.html': HTMLDocumentLoader,
         '.htm': HTMLDocumentLoader,
         # COBOL source
