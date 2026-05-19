@@ -1,0 +1,149 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Employee Payroll System - Process Flow</title>
+    <style>
+        body { font-family: Arial, sans-serif; margin: 20px; }
+        h1 { color: #333; }
+        .process-step { margin: 15px 0; padding: 10px; border-left: 4px solid #007bff; }
+        .integration { background-color: #f0f0f0; padding: 10px; margin: 10px 0; }
+    </style>
+</head>
+<body>
+    <h1>Employee Payroll System - Process Flow Documentation</h1>
+    
+    <h2>Daily Processing Steps</h2>
+    
+    <div class="process-step">
+        <h3>Step 1: Data Preparation</h3>
+        <p>Every morning at 6:00 AM, the system automatically retrieves employee records from the Employee Management System. This includes:</p>
+        <ul>
+            <li>Active employee roster with current salary information</li>
+            <li>Department assignments and cost center codes</li>
+            <li>Tax withholding preferences and W-4 information</li>
+            <li>Benefit deduction elections</li>
+        </ul>
+    </div>
+    
+    <div class="process-step">
+        <h3>Step 2: Payroll Calculation</h3>
+        <p>For each employee, the system calculates:</p>
+        <ul>
+            <li>Gross pay based on salary and hours worked</li>
+            <li>Federal income tax withholding</li>
+            <li>State and local tax withholding</li>
+            <li>Social Security and Medicare taxes</li>
+            <li>Employee benefit deductions</li>
+            <li>Net pay (Gross pay minus all deductions)</li>
+        </ul>
+        <p><strong>Tax Rate Reference:</strong> Federal: 12%, State: Varies by location, FICA: 7.65%</p>
+    </div>
+    
+    <div class="process-step">
+        <h3>Step 3: Validation and Verification</h3>
+        <p>Quality assurance checks:</p>
+        <ul>
+            <li>Verify no negative net pay calculations</li>
+            <li>Check tax deductions are within legal limits</li>
+            <li>Validate employee status (active/inactive)</li>
+            <li>Compare against previous payroll for anomalies</li>
+        </ul>
+    </div>
+    
+    <div class="process-step">
+        <h3>Step 4: Payroll Approval</h3>
+        <p>Finance Manager reviews and approves the payroll run. System requires sign-off before proceeding.</p>
+    </div>
+    
+    <div class="process-step">
+        <h3>Step 5: Payment Processing</h3>
+        <p>Approved payroll is processed for payment:</p>
+        <ul>
+            <li>Direct deposit to employee bank accounts</li>
+            <li>Check printing for employees without direct deposit</li>
+            <li>Tax payment to government agencies</li>
+            <li>Benefits premiums to insurance providers</li>
+        </ul>
+    </div>
+    
+    <div class="process-step">
+        <h3>Step 6: Report Generation</h3>
+        <p>System generates reports for distribution:</p>
+        <ul>
+            <li>Individual pay stubs for each employee</li>
+            <li>Payroll summary report for executives</li>
+            <li>Tax liability report for accounting</li>
+            <li>Cost center allocation report for departments</li>
+        </ul>
+    </div>
+    
+    <h2>System Integrations</h2>
+    
+    <div class="integration">
+        <h3>Employee Management System</h3>
+        <p><strong>Data Flow:</strong> Employee data → Payroll System</p>
+        <p><strong>Frequency:</strong> Real-time sync for active updates</p>
+        <p><strong>Data Elements:</strong> Employee ID, name, salary, department, tax ID</p>
+    </div>
+    
+    <div class="integration">
+        <h3>Accounting System</h3>
+        <p><strong>Data Flow:</strong> Payroll data → Accounting System</p>
+        <p><strong>Frequency:</strong> End of payroll period</p>
+        <p><strong>Data Elements:</strong> Gross pay, deductions, tax payments, cost allocations</p>
+    </div>
+    
+    <div class="integration">
+        <h3>Banking System</h3>
+        <p><strong>Data Flow:</strong> Payment instructions → Banking System</p>
+        <p><strong>Frequency:</strong> Before payment date</p>
+        <p><strong>Data Elements:</strong> Account numbers, payment amounts, employee identification</p>
+    </div>
+    
+    <div class="integration">
+        <h3>Tax Compliance System</h3>
+        <p><strong>Data Flow:</strong> Tax withholding data → Compliance System</p>
+        <p><strong>Frequency:</strong> Monthly and quarterly</p>
+        <p><strong>Data Elements:</strong> Tax amounts, employee totals, year-to-date amounts</p>
+    </div>
+    
+    <h2>Schedule and Timeline</h2>
+    <table border="1" style="width: 100%;">
+        <tr>
+            <th>Day</th>
+            <th>Activity</th>
+            <th>Time</th>
+        </tr>
+        <tr>
+            <td>Monday-Thursday</td>
+            <td>Data collection and validation</td>
+            <td>6:00 AM - 8:00 AM</td>
+        </tr>
+        <tr>
+            <td>Friday</td>
+            <td>Full payroll processing and approval</td>
+            <td>6:00 AM - 2:00 PM</td>
+        </tr>
+        <tr>
+            <td>Friday</td>
+            <td>Payment execution</td>
+            <td>3:00 PM - 5:00 PM</td>
+        </tr>
+        <tr>
+            <td>Monday</td>
+            <td>Payroll reports distributed</td>
+            <td>8:00 AM</td>
+        </tr>
+    </table>
+    
+    <h2>Critical Contacts</h2>
+    <ul>
+        <li><strong>Payroll Manager:</strong> John Smith - payroll@company.com</li>
+        <li><strong>Finance Director:</strong> Jane Doe - finance@company.com</li>
+        <li><strong>IT Support:</strong> it-support@company.com - (555) 123-4567</li>
+        <li><strong>Tax Compliance Officer:</strong> Tax.Compliance@company.com</li>
+    </ul>
+</body>
+</html>

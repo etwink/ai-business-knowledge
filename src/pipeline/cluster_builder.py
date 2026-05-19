@@ -1,0 +1,500 @@
+"""
+Build document clusters for hierarchical summarization.
+
+Strategy:
+  1. COBOL files: grouped by dependency graph (entry-point programs + their
+     transitive dependencies form one cluster).
+  2. Word/Excel files: first checked for mentions of COBOL program names and
+     merged into the matching COBOL cluster; remaining docs are clustered by
+     an LLM call that groups them into logical business domains.
+"""
+
+import json
+import re
+from dataclasses import dataclass, field
+from pathlib import Path
+
+from cobol_dependency_analyzer import (
+    parse_file,
+    build_dependency_graph,
+    find_transitive_dependencies,
+)
+
+# Clusters larger than this are split into sub-clusters by direct-callee groups.
+_MAX_CLUSTER_FILES = 15
+
+# Multi-cluster doc assignment: a doc is added to any cluster whose hit count is
+# at least this fraction of the best (highest-scoring) cluster's hit count.
+_MULTI_CLUSTER_RATIO = 0.5
+
+# Global doc threshold: if a doc qualifies for this many or more clusters it is
+# treated as a shared reference document rather than a member of any one cluster.
+# It will be injected as context into every matching cluster's synthesis prompt.
+_GLOBAL_CLUSTER_THRESHOLD = 3
+
+
+@dataclass
+class DocumentCluster:
+    cluster_id: str
+    cluster_name: str
+    # "cobol", "docs", or "mixed" (COBOL cluster that absorbed related Word/Excel docs)
+    cluster_type: str
+    cobol_files: list[Path] = field(default_factory=list)
+    doc_files: list[Path] = field(default_factory=list)
+    # Stem names of COBOL programs in this cluster (upper-case), used for cross-referencing
+    cobol_program_names: set[str] = field(default_factory=set)
+    # Entry-point program name for COBOL clusters (None for pure-doc clusters)
+    entry_point: str | None = None
+    # Docs that matched multiple clusters and are injected as shared context
+    # rather than assigned as members.  Not counted in file_count.
+    shared_doc_files: list[Path] = field(default_factory=list)
+
+    @property
+    def all_files(self) -> list[Path]:
+        return self.cobol_files + self.doc_files
+
+    @property
+    def file_count(self) -> int:
+        return len(self.all_files)
+
+
+class ClusterBuilder:
+    """Build document clusters from a scanned document set."""
+
+    def __init__(self):
+        from src.llm_integration import AzureLLMClient
+        self.llm = AzureLLMClient()
+
+    # ------------------------------------------------------------------
+    # Public API
+    # ------------------------------------------------------------------
+
+    def build_clusters(
+        self,
+        cobol_files: list[Path],
+        word_files: list[Path],
+        excel_files: list[Path],
+        code_files: list[Path] | None = None,
+    ) -> list[DocumentCluster]:
+        """
+        Return a list of DocumentClusters ready for hierarchical summarization.
+
+        Steps:
+          1. Group COBOL files by dependency graph.
+          2. Match Word/Excel/code docs to COBOL clusters by program-name mentions.
+          3. LLM-cluster the remaining unmatched docs.
+        """
+        clusters = self._build_cobol_clusters(cobol_files)
+        all_docs = (code_files or []) + word_files + excel_files
+        unmatched_docs = self._attach_docs_to_cobol_clusters(clusters, all_docs)
+        if unmatched_docs:
+            doc_clusters = self._llm_cluster_docs(unmatched_docs)
+            clusters.extend(doc_clusters)
+        return clusters
+
+    # ------------------------------------------------------------------
+    # COBOL clustering via dependency graph
+    # ------------------------------------------------------------------
+
+    def _build_cobol_clusters(self, cobol_files: list[Path]) -> list[DocumentCluster]:
+        if not cobol_files:
+            return []
+
+        analyses = [parse_file(p) for p in cobol_files]
+        graph = build_dependency_graph(analyses)
+
+        # Identify entry points: files that appear as a source but are never
+        # someone else's target (i.e. nothing calls them).
+        all_targets: set[str] = {
+            d["target"] for deps in graph.values() for d in deps
+        }
+        all_sources: set[str] = set(graph.keys())
+        entry_points = all_sources - all_targets
+
+        # Files that don't appear in the graph at all are standalone.
+        graphed_names = set(graph.keys()) | all_targets
+        standalone_names = {
+            p.stem.upper() for p in cobol_files
+        } - graphed_names
+
+        # Build path lookup: stem (upper) → Path
+        path_by_stem: dict[str, Path] = {
+            p.stem.upper(): p for p in cobol_files
+        }
+
+        clusters: list[DocumentCluster] = []
+        assigned: set[str] = set()
+
+        for ep in sorted(entry_points):
+            transitive = find_transitive_dependencies(graph, ep)
+            cluster_stems = {ep} | transitive
+
+            cluster_files = [
+                path_by_stem[s] for s in cluster_stems if s in path_by_stem
+            ]
+            if not cluster_files:
+                continue
+
+            clusters.append(
+                DocumentCluster(
+                    cluster_id=f"cobol_{ep.lower()}",
+                    cluster_name=f"COBOL Subsystem: {ep}",
+                    cluster_type="cobol",
+                    cobol_files=cluster_files,
+                    cobol_program_names=cluster_stems,
+                    entry_point=ep,
+                )
+            )
+            assigned |= cluster_stems
+
+        # Standalone / unassigned COBOL files (pure copybooks, utilities)
+        unassigned_paths = [
+            p for p in cobol_files
+            if p.stem.upper() not in assigned
+        ]
+        # Also add standalone programs not connected to anything
+        standalone_paths = [
+            path_by_stem[s] for s in standalone_names if s in path_by_stem
+        ]
+        leftover = list({p for p in unassigned_paths + standalone_paths})
+        if leftover:
+            stems = {p.stem.upper() for p in leftover}
+            clusters.append(
+                DocumentCluster(
+                    cluster_id="cobol_utilities",
+                    cluster_name="COBOL Shared Utilities & Copybooks",
+                    cluster_type="cobol",
+                    cobol_files=sorted(leftover),
+                    cobol_program_names=stems,
+                    entry_point=None,
+                )
+            )
+
+        # Split any cluster that is too large to analyse in one LLM call
+        result: list[DocumentCluster] = []
+        for cl in clusters:
+            if cl.file_count > _MAX_CLUSTER_FILES:
+                result.extend(self._split_large_cluster(cl, graph, path_by_stem))
+            else:
+                result.append(cl)
+        return result
+
+    def _split_large_cluster(
+        self,
+        cluster: DocumentCluster,
+        graph: dict,
+        path_by_stem: dict[str, Path],
+        _depth: int = 0,
+    ) -> list[DocumentCluster]:
+        """
+        Recursively split an oversized COBOL cluster into sub-clusters.
+
+        For clusters WITH an entry point: use the entry point's direct callees
+        as sub-cluster roots; each gets its transitive deps (bounded to the
+        parent file set).  The entry point + leftover form a residual core.
+
+        For clusters WITHOUT an entry point (utilities bucket): find internal
+        "mini-entry-points" by building a sub-graph restricted to these files,
+        then fall back to alphabetical chunking if no structure is found.
+
+        Recursion is capped at depth 3 to guarantee termination.
+        """
+        if cluster.file_count <= _MAX_CLUSTER_FILES or _depth >= 3:
+            return [cluster]
+
+        parent_stems = cluster.cobol_program_names
+
+        if cluster.entry_point:
+            # ── Has entry point: split by direct callees ──────────────────────
+            ep = cluster.entry_point
+            direct_deps = sorted(
+                {d["target"] for d in graph.get(ep, [])} & parent_stems
+            )
+            roots = direct_deps
+        else:
+            # ── No entry point: find internal structure ───────────────────────
+            # Build a sub-graph restricted to this cluster's files
+            sub_graph: dict[str, list] = {
+                k: [d for d in v if d["target"] in parent_stems]
+                for k, v in graph.items()
+                if k in parent_stems
+            }
+            sub_targets = {d["target"] for deps in sub_graph.values() for d in deps}
+            sub_sources = set(sub_graph.keys())
+            # Mini-entry-points: present in sub-graph as callers but never as callees
+            mini_entries = sub_sources - sub_targets
+            # Also include stems that have no graph presence at all — treat
+            # them as independent units so they still get split into chunks.
+            if not mini_entries:
+                # Fully disconnected or cyclic — fall back to alphabetical chunks
+                return self._split_into_chunks(cluster, path_by_stem)
+            roots = sorted(mini_entries)
+
+        # ── Build sub-clusters from roots ─────────────────────────────────────
+        sub_clusters: list[DocumentCluster] = []
+        absorbed: set[str] = set()
+
+        for root in roots:
+            if root in absorbed:
+                continue
+            sub_stems = ({root} | find_transitive_dependencies(graph, root)) & parent_stems
+            sub_files = [path_by_stem[s] for s in sorted(sub_stems) if s in path_by_stem]
+            if not sub_files:
+                continue
+            sub_clusters.append(
+                DocumentCluster(
+                    cluster_id=f"cobol_{root.lower()}",
+                    cluster_name=f"COBOL Subsystem: {root}",
+                    cluster_type="cobol",
+                    cobol_files=sub_files,
+                    cobol_program_names=sub_stems,
+                    entry_point=root,
+                )
+            )
+            absorbed |= sub_stems
+
+        # Residual: entry point itself + anything not absorbed
+        residual_stems = parent_stems - absorbed
+        if residual_stems:
+            residual_files = [path_by_stem[s] for s in sorted(residual_stems) if s in path_by_stem]
+            if residual_files:
+                ep = cluster.entry_point
+                sub_clusters.append(
+                    DocumentCluster(
+                        cluster_id=f"cobol_{ep.lower()}_core" if ep else "cobol_utilities_core",
+                        cluster_name=f"COBOL Core: {ep}" if ep else "COBOL Shared Utilities",
+                        cluster_type="cobol",
+                        cobol_files=residual_files,
+                        cobol_program_names=residual_stems,
+                        entry_point=ep,
+                    )
+                )
+
+        if not sub_clusters:
+            return self._split_into_chunks(cluster, path_by_stem)
+
+        # Recurse on any sub-cluster that is still too large
+        result: list[DocumentCluster] = []
+        for sc in sub_clusters:
+            if sc.file_count > _MAX_CLUSTER_FILES:
+                result.extend(self._split_large_cluster(sc, graph, path_by_stem, _depth + 1))
+            else:
+                result.append(sc)
+        return result
+
+    def _split_into_chunks(
+        self,
+        cluster: DocumentCluster,
+        path_by_stem: dict[str, Path],
+    ) -> list[DocumentCluster]:
+        """Last-resort: split alphabetically into chunks of _MAX_CLUSTER_FILES."""
+        files = sorted(cluster.cobol_files, key=lambda p: p.name)
+        chunks: list[DocumentCluster] = []
+        for i in range(0, len(files), _MAX_CLUSTER_FILES):
+            batch = files[i : i + _MAX_CLUSTER_FILES]
+            part = i // _MAX_CLUSTER_FILES + 1
+            stems = {p.stem.upper() for p in batch}
+            chunks.append(
+                DocumentCluster(
+                    cluster_id=f"cobol_util_part_{part}",
+                    cluster_name=f"COBOL Utilities (Part {part})",
+                    cluster_type="cobol",
+                    cobol_files=batch,
+                    cobol_program_names=stems,
+                    entry_point=None,
+                )
+            )
+        return chunks
+
+    # ------------------------------------------------------------------
+    # Attach Word/Excel docs to COBOL clusters by name-mention
+    # ------------------------------------------------------------------
+
+    def _attach_docs_to_cobol_clusters(
+        self,
+        cobol_clusters: list[DocumentCluster],
+        doc_files: list[Path],
+    ) -> list[Path]:
+        """
+        For each doc file, score it against every COBOL cluster by counting
+        program-name mentions.  Three outcomes are possible:
+
+        1. No matches → unmatched (goes to LLM clustering later).
+        2. Matches 1–(_GLOBAL_CLUSTER_THRESHOLD-1) clusters above the ratio
+           threshold → added to each matching cluster's doc_files (multi-cluster
+           assignment).
+        3. Matches _GLOBAL_CLUSTER_THRESHOLD or more clusters → treated as a
+           global/shared reference document and added to each matching cluster's
+           shared_doc_files instead, so it informs all those summaries without
+           inflating cluster membership counts.
+
+        Returns the list of doc files that didn't match any cluster.
+        """
+        if not doc_files or not cobol_clusters:
+            return doc_files
+
+        unmatched: list[Path] = []
+
+        for doc_path in doc_files:
+            text = _read_text_excerpt(doc_path, max_chars=50_000)
+            if not text:
+                unmatched.append(doc_path)
+                continue
+
+            # Score every cluster
+            scored: list[tuple[int, DocumentCluster]] = []
+            for cluster in cobol_clusters:
+                hits = _count_program_mentions(text, cluster.cobol_program_names)
+                if hits > 0:
+                    scored.append((hits, cluster))
+
+            if not scored:
+                unmatched.append(doc_path)
+                continue
+
+            best_hits = max(h for h, _ in scored)
+            min_hits = max(1, int(best_hits * _MULTI_CLUSTER_RATIO))
+            matching = [c for h, c in scored if h >= min_hits]
+
+            if len(matching) >= _GLOBAL_CLUSTER_THRESHOLD:
+                # Global doc: inject as shared context, not a cluster member
+                for cluster in matching:
+                    cluster.shared_doc_files.append(doc_path)
+            else:
+                # Assign to each qualifying cluster
+                for cluster in matching:
+                    cluster.doc_files.append(doc_path)
+                    if cluster.cluster_type == "cobol":
+                        cluster.cluster_type = "mixed"
+
+        return unmatched
+
+    # ------------------------------------------------------------------
+    # LLM clustering for remaining docs
+    # ------------------------------------------------------------------
+
+    def _llm_cluster_docs(self, doc_files: list[Path]) -> list[DocumentCluster]:
+        """Ask the LLM to group unmatched docs into logical business domains."""
+        if not doc_files:
+            return []
+
+        # Build a short description list for the LLM
+        entries: list[str] = []
+        for p in doc_files:
+            excerpt = _read_text_excerpt(p, max_chars=400).replace("\n", " ").strip()
+            entries.append(f'- "{p.name}": {excerpt[:300]}')
+
+        prompt = _build_doc_clustering_prompt(entries)
+        try:
+            response = self.llm.query(prompt, temperature=0, max_tokens=1500)
+            groups = _parse_clustering_response(response, doc_files)
+        except Exception:
+            # Fallback: one cluster for all remaining docs
+            groups = [{"name": "Supporting Documents", "files": doc_files}]
+
+        clusters: list[DocumentCluster] = []
+        for i, group in enumerate(groups):
+            clusters.append(
+                DocumentCluster(
+                    cluster_id=f"docs_{i}",
+                    cluster_name=group["name"],
+                    cluster_type="docs",
+                    doc_files=group["files"],
+                )
+            )
+        return clusters
+
+
+# ------------------------------------------------------------------
+# Helpers
+# ------------------------------------------------------------------
+
+def _read_text_excerpt(path: Path, max_chars: int = 50_000) -> str:
+    """Return a plain-text excerpt from a file (best-effort)."""
+    try:
+        suffix = path.suffix.upper()
+        if suffix == ".DOCX":
+            from docx import Document as DocxDocument
+            doc = DocxDocument(path)
+            text = "\n".join(p.text for p in doc.paragraphs)
+            for table in doc.tables:
+                for row in table.rows:
+                    text += " ".join(c.text for c in row.cells) + "\n"
+            return text[:max_chars]
+        elif suffix in {".XLSX", ".XLS"}:
+            from openpyxl import load_workbook
+            wb = load_workbook(path, read_only=True, data_only=True)
+            parts: list[str] = []
+            for ws in wb.worksheets:
+                parts.append(f"Sheet: {ws.title}")
+                for row in ws.iter_rows(values_only=True):
+                    parts.append(
+                        " | ".join(str(c) for c in row if c is not None)
+                    )
+            return "\n".join(parts)[:max_chars]
+        else:
+            return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
+    except Exception:
+        return ""
+
+
+def _count_program_mentions(text: str, program_names: set[str]) -> int:
+    """Count how many distinct program names from the set appear in text."""
+    text_upper = text.upper()
+    return sum(1 for name in program_names if re.search(r"\b" + re.escape(name) + r"\b", text_upper))
+
+
+def _build_doc_clustering_prompt(file_entries: list[str]) -> str:
+    n = len(file_entries)
+    target_groups = max(2, min(8, n // 3))
+    entries_text = "\n".join(file_entries)
+    return f"""You are organizing {n} files (business documents and/or source code) into logical groups for analysis.
+
+Below are the filenames and short excerpts. Group them into {target_groups}–{target_groups + 2} clusters based on shared business domain, process area, or subject matter.
+
+Files:
+{entries_text}
+
+Return ONLY valid JSON in this exact format (no markdown, no explanation):
+{{
+  "clusters": [
+    {{"name": "Descriptive Group Name", "files": ["filename1.docx", "script.py", "filename2.xlsx"]}},
+    ...
+  ]
+}}"""
+
+
+def _parse_clustering_response(
+    response: str,
+    all_files: list[Path],
+) -> list[dict]:
+    """Parse LLM JSON response into a list of {{name, files}} dicts."""
+    path_by_name: dict[str, Path] = {p.name: p for p in all_files}
+
+    # Strip markdown fences if present
+    clean = re.sub(r"```(?:json)?|```", "", response).strip()
+    try:
+        data = json.loads(clean)
+        groups: list[dict] = []
+        assigned: set[str] = set()
+
+        for cluster in data.get("clusters", []):
+            name = cluster.get("name", "Documents")
+            files: list[Path] = []
+            for fname in cluster.get("files", []):
+                if fname in path_by_name and fname not in assigned:
+                    files.append(path_by_name[fname])
+                    assigned.add(fname)
+            if files:
+                groups.append({"name": name, "files": files})
+
+        # Any files not placed by the LLM go into a catch-all
+        leftover = [p for p in all_files if p.name not in assigned]
+        if leftover:
+            groups.append({"name": "General Documents", "files": leftover})
+
+        return groups
+    except (json.JSONDecodeError, KeyError):
+        return [{"name": "Business Documents", "files": all_files}]
+
+
