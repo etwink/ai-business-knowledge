@@ -150,6 +150,66 @@ class ExcelDocumentLoader(BaseDocumentLoader):
         )
 
 
+class MacroEnabledExcelDocumentLoader(ExcelDocumentLoader):
+    """Loader for macro-enabled Excel workbooks (.xlsm).
+
+    Extends ExcelDocumentLoader with a third pass that extracts VBA macro
+    source code using oletools.olevba.  Falls back gracefully if oletools
+    is not installed or the file contains no macros.
+    """
+
+    # Cap total VBA output so it doesn't overwhelm the context window.
+    _MAX_VBA_CHARS = 20_000
+
+    def load(self) -> DocumentContent:
+        # Pass 1 + 2: sheet values and formulas (inherited)
+        base = super().load()
+
+        # Pass 3: VBA macro source code
+        vba_section = self._extract_vba()
+
+        content = base.content
+        if vba_section:
+            content += f"\n\n--- VBA MACROS (automation logic embedded in the workbook) ---\n{vba_section}"
+
+        return DocumentContent(
+            filename=base.filename,
+            file_type="excel_macro",
+            content=content,
+            metadata={**base.metadata, "has_vba": bool(vba_section)},
+        )
+
+    def _extract_vba(self) -> str:
+        try:
+            from oletools.olevba import VBA_Parser  # type: ignore
+        except ImportError:
+            return "(oletools not installed — install it with: pip install oletools)"
+
+        try:
+            vba_parser = VBA_Parser(str(self.file_path))
+            if not vba_parser.detect_vba_macros():
+                return ""
+
+            parts: list[str] = []
+            total_chars = 0
+            for (_filename, _stream_path, vba_filename, vba_code) in vba_parser.extract_macros():
+                if not vba_code or not vba_code.strip():
+                    continue
+                header = f"=== Module: {vba_filename} ==="
+                chunk = f"{header}\n{vba_code.strip()}"
+                if total_chars + len(chunk) > self._MAX_VBA_CHARS:
+                    remaining = self._MAX_VBA_CHARS - total_chars
+                    if remaining > len(header) + 20:
+                        parts.append(chunk[:remaining] + "\n... (truncated)")
+                    break
+                parts.append(chunk)
+                total_chars += len(chunk)
+            vba_parser.close()
+            return "\n\n".join(parts)
+        except Exception:
+            return ""
+
+
 class HTMLDocumentLoader(BaseDocumentLoader):
     """Loader for HTML files."""
 
@@ -210,6 +270,7 @@ def get_loader(file_path: Path) -> BaseDocumentLoader:
         '.doc': WordDocumentLoader,
         '.xlsx': ExcelDocumentLoader,
         '.xls': ExcelDocumentLoader,
+        '.xlsm': MacroEnabledExcelDocumentLoader,
         '.html': HTMLDocumentLoader,
         '.htm': HTMLDocumentLoader,
         # COBOL source

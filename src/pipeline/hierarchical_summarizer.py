@@ -310,6 +310,23 @@ Write a unified subsystem summary (500–700 words) that integrates both the tec
                     "3. Overall purpose — What business question does this spreadsheet answer, "
                     "and how does it connect to the larger process?"
                 )
+            elif doc.file_type == "excel_macro":
+                focus = (
+                    "This macro-enabled Excel workbook contains three sections: DATA VALUES, "
+                    "FORMULAS, and VBA MACROS. Analyse all three angles:\n"
+                    "1. DATA VALUES — What data is stored? What do the numbers/text represent "
+                    "in business terms? What decisions or reports does this workbook support?\n"
+                    "2. FORMULAS — What calculations are performed? What business rules do "
+                    "the formulas encode?\n"
+                    "3. VBA MACROS — What automation or logic do the macros implement? "
+                    "What triggers them (button click, workbook open, cell change, scheduled)? "
+                    "What inputs do they read, what outputs or side effects do they produce "
+                    "(writes to cells, sends emails, calls external systems, etc.)? "
+                    "What business process do the macros automate, and what would break if "
+                    "they stopped running?\n"
+                    "4. Overall purpose — How do the data, formulas, and macros work together "
+                    "to support the larger business process?"
+                )
             elif doc.file_type in ("text", "cobol"):
                 focus = (
                     "Focus on: business purpose, key logic/processes, data structures used, "
