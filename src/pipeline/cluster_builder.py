@@ -386,11 +386,15 @@ class ClusterBuilder:
 
         prompt = _build_doc_clustering_prompt(entries)
         try:
-            response = self.llm.query(prompt, temperature=0, max_tokens=1500)
+            response = self.llm.query(prompt, temperature=0, max_tokens=6000)
             groups = _parse_clustering_response(response, doc_files)
         except Exception:
-            # Fallback: one cluster for all remaining docs
-            groups = [{"name": "Supporting Documents", "files": doc_files}]
+            groups = []
+
+        # If LLM produced only one group (or failed entirely), fall back to a
+        # file-type-based split so we at least get some differentiation.
+        if len(groups) <= 1:
+            groups = _fallback_cluster_by_type(doc_files)
 
         clusters: list[DocumentCluster] = []
         for i, group in enumerate(groups):
@@ -421,7 +425,7 @@ def _read_text_excerpt(path: Path, max_chars: int = 50_000) -> str:
                 for row in table.rows:
                     text += " ".join(c.text for c in row.cells) + "\n"
             return text[:max_chars]
-        elif suffix in {".XLSX", ".XLS"}:
+        elif suffix in {".XLSX", ".XLS", ".XLSM"}:
             from openpyxl import load_workbook
             wb = load_workbook(path, read_only=True, data_only=True)
             parts: list[str] = []
@@ -432,6 +436,21 @@ def _read_text_excerpt(path: Path, max_chars: int = 50_000) -> str:
                         " | ".join(str(c) for c in row if c is not None)
                     )
             return "\n".join(parts)[:max_chars]
+        elif suffix == ".XLSB":
+            try:
+                from pyxlsb import open_workbook  # type: ignore
+                parts: list[str] = []
+                with open_workbook(str(path)) as wb:
+                    for sheet_name in wb.sheets:
+                        parts.append(f"Sheet: {sheet_name}")
+                        with wb.get_sheet(sheet_name) as ws:
+                            for row in ws.rows():
+                                cells = [str(c.v) for c in row if c.v is not None]
+                                if cells:
+                                    parts.append(" | ".join(cells))
+                return "\n".join(parts)[:max_chars]
+            except ImportError:
+                return ""
         else:
             return path.read_text(encoding="utf-8", errors="ignore")[:max_chars]
     except Exception:
@@ -446,11 +465,14 @@ def _count_program_mentions(text: str, program_names: set[str]) -> int:
 
 def _build_doc_clustering_prompt(file_entries: list[str]) -> str:
     n = len(file_entries)
-    target_groups = max(2, min(8, n // 3))
+    # Aim for roughly one cluster per 6–7 files, capped at 6 so the result stays
+    # manageable.  The LLM is allowed to use fewer if documents don't naturally
+    # divide into that many topics.
+    target_groups = max(2, min(6, n // 6))
     entries_text = "\n".join(file_entries)
     return f"""You are organizing {n} files (business documents and/or source code) into logical groups for analysis.
 
-Below are the filenames and short excerpts. Group them into {target_groups}–{target_groups + 2} clusters based on shared business domain, process area, or subject matter.
+Below are the filenames and short excerpts. Group them into approximately {target_groups}–{target_groups + 2} clusters based on shared business domain, process area, or subject matter. Use fewer clusters if the documents clearly belong to fewer topics — do not force artificial splits.
 
 Files:
 {entries_text}
@@ -458,10 +480,36 @@ Files:
 Return ONLY valid JSON in this exact format (no markdown, no explanation):
 {{
   "clusters": [
-    {{"name": "Descriptive Group Name", "files": ["filename1.docx", "script.py", "filename2.xlsx"]}},
+    {{"name": "Descriptive Group Name", "files": ["filename1.docx", "filename2.xlsx"]}},
     ...
   ]
 }}"""
+
+
+def _fallback_cluster_by_type(doc_files: list[Path]) -> list[dict]:
+    """
+    Last-resort fallback when LLM clustering fails or returns only one group.
+    Splits files into buckets by broad file type so there is at least some
+    differentiation rather than one giant cluster.
+    """
+    word_exts = {".DOCX", ".DOC"}
+    excel_exts = {".XLSX", ".XLS", ".XLSM", ".XLSB"}
+    code_exts = {".PY", ".SQL", ".JS", ".TS", ".VB", ".BAS", ".CS", ".JAVA",
+                 ".PS1", ".R", ".SH", ".BAT", ".CMD"}
+
+    buckets: dict[str, list[Path]] = {}
+    for p in doc_files:
+        ext = p.suffix.upper()
+        if ext in word_exts:
+            buckets.setdefault("Business Documents (Word)", []).append(p)
+        elif ext in excel_exts:
+            buckets.setdefault("Spreadsheets & Workbooks (Excel)", []).append(p)
+        elif ext in code_exts:
+            buckets.setdefault("Source Code & Scripts", []).append(p)
+        else:
+            buckets.setdefault("Supporting Documents", []).append(p)
+
+    return [{"name": name, "files": files} for name, files in buckets.items()]
 
 
 def _parse_clustering_response(
