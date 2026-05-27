@@ -75,6 +75,7 @@ class ClusterBuilder:
         word_files: list[Path],
         excel_files: list[Path],
         code_files: list[Path] | None = None,
+        context_block: str = "",
     ) -> list[DocumentCluster]:
         """
         Return a list of DocumentClusters ready for hierarchical summarization.
@@ -88,7 +89,7 @@ class ClusterBuilder:
         all_docs = (code_files or []) + word_files + excel_files
         unmatched_docs = self._attach_docs_to_cobol_clusters(clusters, all_docs)
         if unmatched_docs:
-            doc_clusters = self._llm_cluster_docs(unmatched_docs)
+            doc_clusters = self._llm_cluster_docs(unmatched_docs, context_block=context_block)
             clusters.extend(doc_clusters)
         return clusters
 
@@ -373,7 +374,7 @@ class ClusterBuilder:
     # LLM clustering for remaining docs
     # ------------------------------------------------------------------
 
-    def _llm_cluster_docs(self, doc_files: list[Path]) -> list[DocumentCluster]:
+    def _llm_cluster_docs(self, doc_files: list[Path], context_block: str = "") -> list[DocumentCluster]:
         """Ask the LLM to group unmatched docs into logical business domains."""
         if not doc_files:
             return []
@@ -384,7 +385,7 @@ class ClusterBuilder:
             excerpt = _read_text_excerpt(p, max_chars=400).replace("\n", " ").strip()
             entries.append(f'- "{p.name}": {excerpt[:300]}')
 
-        prompt = _build_doc_clustering_prompt(entries)
+        prompt = _build_doc_clustering_prompt(entries, context_block=context_block)
         try:
             response = self.llm.query(prompt, temperature=0, max_tokens=6000)
             groups = _parse_clustering_response(response, doc_files)
@@ -463,15 +464,16 @@ def _count_program_mentions(text: str, program_names: set[str]) -> int:
     return sum(1 for name in program_names if re.search(r"\b" + re.escape(name) + r"\b", text_upper))
 
 
-def _build_doc_clustering_prompt(file_entries: list[str]) -> str:
+def _build_doc_clustering_prompt(file_entries: list[str], context_block: str = "") -> str:
     n = len(file_entries)
     # Aim for roughly one cluster per 6–7 files, capped at 6 so the result stays
     # manageable.  The LLM is allowed to use fewer if documents don't naturally
     # divide into that many topics.
     target_groups = max(2, min(6, n // 6))
     entries_text = "\n".join(file_entries)
+    context_section = f"\nProcess context provided by the user:\n{context_block}\n" if context_block else ""
     return f"""You are organizing {n} files (business documents and/or source code) into logical groups for analysis.
-
+{context_section}
 Below are the filenames and short excerpts. Group them into approximately {target_groups}–{target_groups + 2} clusters based on shared business domain, process area, or subject matter. Use fewer clusters if the documents clearly belong to fewer topics — do not force artificial splits.
 
 Files:

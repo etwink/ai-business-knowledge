@@ -2,25 +2,22 @@
 
 import streamlit as st
 from pathlib import Path
-from typing import List, Optional
 from datetime import datetime
-import json
 
 # Inject truststore into SSL context for better certificate handling (especially in enterprise environments)
 import truststore
 truststore.inject_into_ssl()
 
-from src.document_loaders import get_loader, DocumentContent
+from src.document_loaders import get_loader
 from src.analyzers import (
     DocumentAnalyzer,
     ProcessDocumentBuilder,
     GapAnalyzer,
-    ClarificationQuestionGenerator,
     AnalysisResult,
     ProcessDocument,
     GapAnalysis
 )
-from src.utils import get_supported_documents, validate_file
+from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent, ProcessContext
 from src.rag import KnowledgeBase, RAGAgent
@@ -193,9 +190,8 @@ def render_sidebar():
         page = st.radio(
             "Select a step:",
             [
-                "Upload Documents",
-                "Bulk Load (130+ Files)",
                 "Define Context",
+                "Group Documents",
                 "Analyze",
                 "Review Process Document",
                 "Gap Analysis",
@@ -211,59 +207,330 @@ def render_sidebar():
         return page
 
 
-def render_upload_page():
-    """Render document upload page."""
-    st.header("📤 Upload Documents")
+def render_group_documents_page():
+    """Unified page: load files, define context, build clusters, run hierarchical analysis."""
+    from src.pipeline import FolderScanner, ClusterBuilder, HierarchicalSummarizer
 
-    st.write("Upload documents for analysis (COBOL, Word, Excel, HTML, Text, PDF)")
+    st.header("🗂️ Group Documents")
+    st.write(
+        "Load your documents, describe the process they relate to, then group them into "
+        "logical clusters before running analysis."
+    )
 
-    col1, col2 = st.columns(2)
+    # ── Step 1: Load files ────────────────────────────────────────────────────
+    st.subheader("Step 1 — Load Files")
 
-    with col1:
-        st.subheader("Upload Files")
-        uploaded_files = st.file_uploader(
+    load_mode = st.radio(
+        "How would you like to load files?",
+        ["Scan a folder path", "Upload individual files"],
+        horizontal=True,
+        key="group_load_mode",
+    )
+
+    if load_mode == "Scan a folder path":
+        default_paths = ", ".join(str(p) for p in config.DOCUMENTS_PATHS)
+        raw_paths = st.text_input(
+            "Document folder path(s) — comma-separated for multiple folders",
+            value=default_paths,
+            placeholder="e.g. C:/projects/cobol_source, C:/projects/business_docs",
+            help="Set DOCUMENTS_PATH in your .env file to pre-fill this field.",
+        )
+        input_paths = [Path(p.strip()) for p in raw_paths.split(",") if p.strip()]
+        missing = [str(p) for p in input_paths if not p.exists()]
+        if missing:
+            st.warning(f"Path(s) not found: {', '.join(missing)}")
+
+        recursive = st.checkbox("Scan sub-folders recursively", value=True)
+
+        if st.button("🔍 Scan Folder(s)", disabled=not input_paths or bool(missing)):
+            scanner = FolderScanner()
+            with st.spinner("Scanning…"):
+                st.session_state.bulk_scanned = scanner.scan(input_paths, recursive=recursive)
+                st.session_state.bulk_clusters = None
+                st.session_state.bulk_cluster_summaries = None
+                st.session_state.uploaded_files = []
+
+    else:  # Upload individual files
+        uploaded = st.file_uploader(
             "Choose files",
             accept_multiple_files=True,
-            type=['txt', 'py', 'cob', 'cbl', 'cic', 'cpy', 'docx', 'xlsx', 'html']
+            type=["txt", "py", "cob", "cbl", "cic", "cpy", "docx", "doc", "xlsx", "xlsm", "xlsb", "html"],
         )
+        if uploaded:
+            for uf in uploaded:
+                if uf.name not in [getattr(f, "name", str(f)) for f in st.session_state.uploaded_files]:
+                    st.session_state.uploaded_files.append(uf)
 
-        if uploaded_files:
-            for uploaded_file in uploaded_files:
-                if uploaded_file.name not in [f.name for f in st.session_state.uploaded_files]:
-                    st.session_state.uploaded_files.append(uploaded_file)
-                    st.success(f"Added: {uploaded_file.name}")
-
-    with col2:
-        st.subheader("Or Load from Folder")
-        sample_docs = get_supported_documents(config.SAMPLE_DOCS_DIR)
-        for doc_path in sample_docs:
-            if st.button(f"Load: {doc_path.name}", key=f"load_{doc_path}"):
-                # Read the file
-                with open(doc_path, 'rb') as f:
-                    content = f.read()
-                # Create a mock uploaded file object
-                class MockUploadedFile:
-                    def __init__(self, name, content):
-                        self.name = name
-                        self.content = content
-                # Add to session
-                if not any(f.name == doc_path.name for f in st.session_state.uploaded_files):
-                    st.session_state.uploaded_files.append(doc_path)
-
-    st.divider()
-    st.subheader("Uploaded Files")
-
-    if st.session_state.uploaded_files:
-        for idx, file in enumerate(st.session_state.uploaded_files):
-            col1, col2 = st.columns([4, 1])
-            with col1:
-                st.write(f"📄 {getattr(file, 'name', str(file))}")
-            with col2:
-                if st.button("🗑️", key=f"remove_{idx}"):
+        if st.session_state.uploaded_files:
+            st.write(f"**{len(st.session_state.uploaded_files)} file(s) loaded:**")
+            for idx, file in enumerate(st.session_state.uploaded_files):
+                col_name, col_rm = st.columns([5, 1])
+                col_name.caption(f"📄 {getattr(file, 'name', str(file))}")
+                if col_rm.button("🗑️", key=f"rm_upload_{idx}"):
                     st.session_state.uploaded_files.pop(idx)
                     st.rerun()
-    else:
-        st.info("No files uploaded yet")
+        else:
+            st.info("No files uploaded yet.")
+
+    # Show scan results summary
+    scanned = st.session_state.bulk_scanned
+    if scanned:
+        st.success(f"Found {scanned.summary()}")
+        col1, col2, col3, col4 = st.columns(4)
+        col1.metric("COBOL files", len(scanned.cobol))
+        col2.metric("Source code", len(scanned.code))
+        col3.metric("Word docs", len(scanned.word))
+        col4.metric("Excel files", len(scanned.excel))
+        with st.expander("Show all discovered files"):
+            if scanned.cobol:
+                st.write("**COBOL**")
+                for p in scanned.cobol: st.caption(str(p))
+            if scanned.code:
+                st.write("**Source Code** (Python, SQL, JS, etc.)")
+                for p in scanned.code: st.caption(str(p))
+            if scanned.word:
+                st.write("**Word**")
+                for p in scanned.word: st.caption(str(p))
+            if scanned.excel:
+                st.write("**Excel**")
+                for p in scanned.excel: st.caption(str(p))
+
+    files_ready = (scanned and scanned.total_count > 0) or bool(st.session_state.uploaded_files)
+
+    # ── Step 2: Define Context ────────────────────────────────────────────────
+    if files_ready:
+        st.divider()
+        st.subheader("Step 2 — Define Context (Optional but Recommended)")
+        st.write(
+            "Providing context helps the LLM understand the business domain and produce "
+            "more accurate clusters and document sections. You can set a quick description "
+            "here, or visit the **Define Context** page for the full guided experience."
+        )
+        ctx = st.session_state.process_context
+        if ctx and ctx.is_set():
+            with st.expander("✅ Context is set — click to view or change", expanded=False):
+                st.write(ctx.to_prompt_block())
+                if st.button("✏️ Clear and re-set context", key="group_clear_ctx"):
+                    st.session_state.process_context = None
+                    st.rerun()
+        else:
+            with st.expander("Set context now", expanded=True):
+                quick_ctx = st.text_area(
+                    "Briefly describe what this set of documents is about",
+                    placeholder="e.g. 'Payroll processing system for a mid-size manufacturer — COBOL batch jobs on IBM z/OS'",
+                    height=80,
+                    key="group_quick_ctx",
+                )
+                if st.button("💾 Save Context", key="group_save_ctx") and quick_ctx.strip():
+                    st.session_state.process_context = ProcessContext(
+                        process_description=quick_ctx.strip()
+                    )
+                    st.success("Context saved.")
+                    st.rerun()
+
+    # ── Step 3: Build clusters ────────────────────────────────────────────────
+    if files_ready:
+        st.divider()
+        st.subheader("Step 3 — Build Dependency Clusters")
+        st.write(
+            "Files are grouped into logical subsystem clusters. COBOL files are clustered "
+            "by their CALL/COPY dependency graph; all other files are grouped by subject matter "
+            "using the LLM, informed by the context you defined above."
+        )
+
+        ctx_block = (
+            st.session_state.process_context.to_prompt_block()
+            if st.session_state.process_context else ""
+        )
+
+        if st.button("🧩 Build Clusters", disabled=st.session_state.bulk_clusters is not None):
+            builder = ClusterBuilder()
+            with st.spinner("Analysing dependencies and clustering documents…"):
+                try:
+                    if scanned:
+                        cobol = scanned.cobol
+                        word = scanned.word
+                        excel = scanned.excel
+                        code = scanned.code
+                    else:
+                        # Uploaded files — sort by extension into buckets
+                        import tempfile, shutil
+                        tmp_dir = Path(tempfile.mkdtemp())
+                        cobol, word, excel, code = [], [], [], []
+                        word_exts = {".doc", ".docx"}
+                        excel_exts = {".xlsx", ".xlsm", ".xlsb", ".xls"}
+                        cobol_exts = {".cob", ".cbl", ".cic", ".cpy"}
+                        for uf in st.session_state.uploaded_files:
+                            ext = Path(getattr(uf, "name", str(uf))).suffix.lower()
+                            dest = tmp_dir / getattr(uf, "name", str(uf))
+                            if hasattr(uf, "read"):
+                                dest.write_bytes(uf.read())
+                            else:
+                                shutil.copy(str(uf), str(dest))
+                            if ext in cobol_exts: cobol.append(dest)
+                            elif ext in word_exts: word.append(dest)
+                            elif ext in excel_exts: excel.append(dest)
+                            else: code.append(dest)
+
+                    st.session_state.bulk_clusters = builder.build_clusters(
+                        cobol_files=cobol,
+                        word_files=word,
+                        excel_files=excel,
+                        code_files=code,
+                        context_block=ctx_block,
+                    )
+                    st.session_state.bulk_cluster_summaries = None
+                except Exception as e:
+                    st.error(f"Clustering failed: {e}")
+
+        if st.session_state.bulk_clusters:
+            clusters = st.session_state.bulk_clusters
+            st.success(f"Built {len(clusters)} clusters")
+            for cl in clusters:
+                label = {
+                    "cobol": "🖥️ Source Code",
+                    "mixed": "🔗 Code + Docs",
+                    "docs": "📄 Documents",
+                }.get(cl.cluster_type, cl.cluster_type)
+                with st.expander(f"{label}: {cl.cluster_name} ({cl.file_count} files)"):
+                    if cl.entry_point:
+                        st.write(f"**Entry point:** {cl.entry_point}")
+                    if cl.cobol_files:
+                        st.write(f"**Source files ({len(cl.cobol_files)}):** " +
+                                 ", ".join(p.name for p in cl.cobol_files[:20]) +
+                                 ("…" if len(cl.cobol_files) > 20 else ""))
+                    if cl.doc_files:
+                        st.write(f"**Docs ({len(cl.doc_files)}):** " +
+                                 ", ".join(p.name for p in cl.doc_files[:10]) +
+                                 ("…" if len(cl.doc_files) > 10 else ""))
+                    if cl.shared_doc_files:
+                        st.write(f"**🌐 Shared reference docs ({len(cl.shared_doc_files)}):** " +
+                                 ", ".join(p.name for p in cl.shared_doc_files[:10]) +
+                                 ("…" if len(cl.shared_doc_files) > 10 else ""))
+
+            if st.button("🔄 Re-cluster (clear and rebuild)"):
+                st.session_state.bulk_clusters = None
+                st.session_state.bulk_cluster_summaries = None
+                st.rerun()
+
+    # ── Step 4: Summarise clusters ────────────────────────────────────────────
+    if st.session_state.bulk_clusters:
+        st.divider()
+        st.subheader("Step 4 — Summarize Clusters")
+        clusters = st.session_state.bulk_clusters
+        n = len(clusters)
+        st.write(
+            f"Each of the {n} clusters will be summarized separately, then synthesized "
+            "into a single process document. "
+            "This makes ~{} LLM calls — expect several minutes for large sets.".format(
+                sum(len(cl.cobol_files) + len(cl.doc_files) + 1 for cl in clusters)
+            )
+        )
+
+        if st.session_state.bulk_cluster_summaries is None:
+            if st.button("▶️ Run Hierarchical Analysis"):
+                summarizer = HierarchicalSummarizer()
+                progress_bar = st.progress(0, text="Starting…")
+                status_text = st.empty()
+
+                def on_progress(name, idx, total):
+                    frac = idx / total
+                    progress_bar.progress(frac, text=f"Summarizing cluster {idx}/{total}")
+                    status_text.write(f"Processing: **{name}**")
+
+                ctx_block = (
+                    st.session_state.process_context.to_prompt_block()
+                    if st.session_state.process_context else ""
+                )
+                try:
+                    summaries = summarizer.summarize_all(
+                        clusters,
+                        progress_callback=on_progress,
+                        context_block=ctx_block,
+                    )
+                    st.session_state.bulk_cluster_summaries = summaries
+                    st.session_state.analyses = [
+                        AnalysisResult(
+                            document_name=cs.cluster_name,
+                            summary=cs.summary,
+                            key_processes=cs.key_processes,
+                            systems_mentioned=cs.systems_mentioned,
+                            technical_details=[f"{cs.file_count} files in cluster"],
+                        )
+                        for cs in summaries
+                    ]
+                    progress_bar.progress(1.0, text="Done!")
+                    status_text.empty()
+                    try:
+                        st.session_state.storage.save_analyses(
+                            _ensure_session(),
+                            st.session_state.analyses,
+                        )
+                        st.success(f"Summarized {len(summaries)} clusters. Saved to session: **{st.session_state.current_session}**")
+                    except Exception as e:
+                        st.success(f"Summarized {len(summaries)} clusters.")
+                        st.warning(f"Could not save analyses: {e}")
+                except Exception as e:
+                    st.error(f"Summarization failed: {e}")
+        else:
+            st.success(f"{len(st.session_state.bulk_cluster_summaries)} cluster summaries ready.")
+            with st.expander("Preview cluster summaries"):
+                for cs in st.session_state.bulk_cluster_summaries:
+                    st.write(f"**{cs.cluster_name}** ({cs.file_count} files)")
+                    st.write(cs.summary)
+                    st.divider()
+
+    # ── Step 5: Build process document ───────────────────────────────────────
+    if st.session_state.bulk_cluster_summaries:
+        st.divider()
+        st.subheader("Step 5 — Build Process Document")
+        st.write(
+            "Synthesize the cluster summaries into one integrated process document. "
+            "This is the same document you'll see in the Review Process Document page."
+        )
+
+        if st.button("📝 Build Process Document"):
+            builder = ProcessDocumentBuilder()
+            section_progress = st.progress(0, text="Starting…")
+            section_status = st.empty()
+
+            def on_section(label, idx, total):
+                section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
+                section_status.write(f"Generating: **{label}**")
+
+            ctx_block = (
+                st.session_state.process_context.to_prompt_block()
+                if st.session_state.process_context else ""
+            )
+            try:
+                process_doc = builder.build_from_cluster_summaries(
+                    st.session_state.bulk_cluster_summaries,
+                    progress_callback=on_section,
+                    context_block=ctx_block,
+                )
+                section_progress.progress(1.0, text="Done!")
+                section_status.empty()
+                st.session_state.process_document = process_doc
+
+                try:
+                    st.session_state.storage.save_process_document(
+                        _ensure_session(),
+                        process_doc,
+                        version="v1",
+                    )
+                    st.success(f"Process document built and saved to session: **{st.session_state.current_session}**. Navigate to **Review Process Document** to continue.")
+                except Exception as save_err:
+                    st.success("Process document built! Navigate to **Review Process Document** to continue.")
+                    st.warning(f"Could not save: {save_err}")
+                st.balloons()
+            except Exception as e:
+                st.error(f"Process document build failed: {e}")
+
+        if st.session_state.process_document:
+            st.info(
+                "✅ Process document is ready. Use the sidebar to navigate to "
+                "**Review Process Document → Gap Analysis → Questions → …**"
+            )
 
 
 def render_analyze_page():
@@ -836,279 +1103,6 @@ def render_context_page():
         st.rerun()
 
 
-def render_bulk_load_page():
-    """Bulk mode: scan a folder, build dependency-aware clusters, and run hierarchical summarization."""
-    from src.pipeline import FolderScanner, ClusterBuilder, HierarchicalSummarizer
-
-    st.header("📂 Bulk Load — Large Document Sets")
-    st.write(
-        "Use this page when you have 50+ files. Documents are grouped into logical "
-        "subsystems before analysis so the final process document stays manageable."
-    )
-
-    # ── Step 1: Configure path ────────────────────────────────────────────────
-    st.subheader("Step 1 — Configure Document Path")
-
-    default_paths = ", ".join(str(p) for p in config.DOCUMENTS_PATHS)
-    raw_paths = st.text_input(
-        "Document folder path(s) — comma-separated for multiple folders",
-        value=default_paths,
-        placeholder="e.g. C:/projects/cobol_source, C:/projects/business_docs",
-        help="Set DOCUMENTS_PATH in your .env file to pre-fill this field.",
-    )
-    input_paths = [Path(p.strip()) for p in raw_paths.split(",") if p.strip()]
-    missing = [str(p) for p in input_paths if not p.exists()]
-    if missing:
-        st.warning(f"Path(s) not found: {', '.join(missing)}")
-
-    recursive = st.checkbox("Scan sub-folders recursively", value=True)
-
-    # ── Step 2: Scan ─────────────────────────────────────────────────────────
-    st.subheader("Step 2 — Scan for Files")
-
-    if st.button("🔍 Scan Folder(s)", disabled=not input_paths or bool(missing)):
-        scanner = FolderScanner()
-        with st.spinner("Scanning…"):
-            st.session_state.bulk_scanned = scanner.scan(input_paths, recursive=recursive)
-            st.session_state.bulk_clusters = None
-            st.session_state.bulk_cluster_summaries = None
-
-    scanned = st.session_state.bulk_scanned
-    if scanned:
-        st.success(f"Found {scanned.summary()}")
-        col1, col2, col3, col4 = st.columns(4)
-        col1.metric("COBOL files", len(scanned.cobol))
-        col2.metric("Source code", len(scanned.code))
-        col3.metric("Word docs", len(scanned.word))
-        col4.metric("Excel files", len(scanned.excel))
-
-        with st.expander("Show all discovered files"):
-            if scanned.cobol:
-                st.write("**COBOL**")
-                for p in scanned.cobol:
-                    st.caption(str(p))
-            if scanned.code:
-                st.write("**Source Code** (Python, SQL, JS, etc.)")
-                for p in scanned.code:
-                    st.caption(str(p))
-            if scanned.word:
-                st.write("**Word**")
-                for p in scanned.word:
-                    st.caption(str(p))
-            if scanned.excel:
-                st.write("**Excel**")
-                for p in scanned.excel:
-                    st.caption(str(p))
-
-    # ── Step 3: Build clusters ────────────────────────────────────────────────
-    if scanned and scanned.total_count > 0:
-        st.subheader("Step 3 — Build Dependency Clusters")
-        st.write(
-            "COBOL files are grouped by their CALL/COPY dependency graph into subsystem clusters. "
-            "Other source code files (Python, SQL, JS, etc.) are treated as business documents "
-            "and grouped by subject matter using the LLM. "
-            "Word and Excel files are first matched to source clusters by program-name mentions, "
-            "then any remaining docs are also LLM-clustered by business domain."
-        )
-
-        if st.button("🧩 Build Clusters", disabled=st.session_state.bulk_clusters is not None):
-            builder = ClusterBuilder()
-            with st.spinner("Analysing dependencies and clustering documents…"):
-                try:
-                    st.session_state.bulk_clusters = builder.build_clusters(
-                        cobol_files=scanned.cobol,
-                        word_files=scanned.word,
-                        excel_files=scanned.excel,
-                        code_files=scanned.code,
-                    )
-                    st.session_state.bulk_cluster_summaries = None
-                except Exception as e:
-                    st.error(f"Clustering failed: {e}")
-
-        if st.session_state.bulk_clusters:
-            clusters = st.session_state.bulk_clusters
-            st.success(f"Built {len(clusters)} clusters")
-            for cl in clusters:
-                label = {
-                    "cobol": "🖥️ Source Code",
-                    "mixed": "🔗 Code + Docs",
-                    "docs": "📄 Documents",
-                }.get(cl.cluster_type, cl.cluster_type)
-                with st.expander(f"{label}: {cl.cluster_name} ({cl.file_count} files)"):
-                    if cl.entry_point:
-                        st.write(f"**Entry point:** {cl.entry_point}")
-                    if cl.cobol_files:
-                        st.write(f"**Source files ({len(cl.cobol_files)}):** " +
-                                 ", ".join(p.name for p in cl.cobol_files[:20]) +
-                                 ("…" if len(cl.cobol_files) > 20 else ""))
-                    if cl.doc_files:
-                        st.write(f"**Docs ({len(cl.doc_files)}):** " +
-                                 ", ".join(p.name for p in cl.doc_files[:10]) +
-                                 ("…" if len(cl.doc_files) > 10 else ""))
-                    if cl.shared_doc_files:
-                        st.write(f"**🌐 Shared reference docs ({len(cl.shared_doc_files)}):** " +
-                                 ", ".join(p.name for p in cl.shared_doc_files[:10]) +
-                                 ("…" if len(cl.shared_doc_files) > 10 else ""))
-
-            if st.button("🔄 Re-cluster (clear and rebuild)"):
-                st.session_state.bulk_clusters = None
-                st.session_state.bulk_cluster_summaries = None
-                st.rerun()
-
-    # ── Step 3.5: Define Context (gate before summarisation) ─────────────────
-    if st.session_state.bulk_clusters:
-        st.subheader("Step 3.5 — Define Context (Optional but Recommended)")
-        ctx = st.session_state.process_context
-        if ctx and ctx.is_set():
-            with st.expander("✅ Context is set — click to view or change", expanded=False):
-                st.write(ctx.to_prompt_block())
-                if st.button("✏️ Edit Context", key="bulk_edit_context"):
-                    st.session_state.process_context = None
-                    st.rerun()
-        else:
-            st.info(
-                "No process context has been defined yet. You can proceed without one, "
-                "but providing context helps the LLM produce more accurate section content. "
-                "Set it here or visit the **Define Context** page for the full guided experience."
-            )
-            with st.expander("Quick-set context", expanded=True):
-                quick_ctx_input = st.text_area(
-                    "Briefly describe what this set of documents is about "
-                    "(e.g. 'Payroll processing system for a mid-size manufacturer — COBOL batch jobs on IBM z/OS')",
-                    height=80,
-                    key="bulk_quick_ctx",
-                )
-                if st.button("💾 Save Quick Context", key="bulk_save_quick_ctx") and quick_ctx_input.strip():
-                    st.session_state.process_context = ProcessContext(
-                        process_description=quick_ctx_input.strip()
-                    )
-                    st.success("Context saved.")
-                    st.rerun()
-
-    # ── Step 4: Summarise clusters ────────────────────────────────────────────
-    if st.session_state.bulk_clusters:
-        st.subheader("Step 4 — Summarize Clusters")
-        clusters = st.session_state.bulk_clusters
-        n = len(clusters)
-        st.write(
-            f"Each of the {n} clusters will be summarized separately using the LLM, "
-            "then synthesized into a single process document. "
-            "This makes ~{} LLM calls — expect several minutes for large sets.".format(
-                sum(len(cl.cobol_files) + len(cl.doc_files) + 1 for cl in clusters)
-            )
-        )
-
-        if st.session_state.bulk_cluster_summaries is None:
-            if st.button("▶️ Run Hierarchical Analysis"):
-                summarizer = HierarchicalSummarizer()
-                progress_bar = st.progress(0, text="Starting…")
-                status_text = st.empty()
-
-                def on_progress(name, idx, total):
-                    frac = idx / total
-                    progress_bar.progress(frac, text=f"Summarizing cluster {idx}/{total}")
-                    status_text.write(f"Processing: **{name}**")
-
-                ctx_block = (
-                    st.session_state.process_context.to_prompt_block()
-                    if st.session_state.process_context else ""
-                )
-                try:
-                    summaries = summarizer.summarize_all(
-                        clusters,
-                        progress_callback=on_progress,
-                        context_block=ctx_block,
-                    )
-                    st.session_state.bulk_cluster_summaries = summaries
-
-                    # Convert to AnalysisResult for storage / downstream compatibility
-                    st.session_state.analyses = [
-                        AnalysisResult(
-                            document_name=cs.cluster_name,
-                            summary=cs.summary,
-                            key_processes=cs.key_processes,
-                            systems_mentioned=cs.systems_mentioned,
-                            technical_details=[f"{cs.file_count} files in cluster"],
-                        )
-                        for cs in summaries
-                    ]
-
-                    progress_bar.progress(1.0, text="Done!")
-                    status_text.empty()
-
-                    try:
-                        st.session_state.storage.save_analyses(
-                            _ensure_session(),
-                            st.session_state.analyses,
-                        )
-                        st.success(f"Summarized {len(summaries)} clusters. Saved to session: **{st.session_state.current_session}**")
-                    except Exception as e:
-                        st.success(f"Summarized {len(summaries)} clusters.")
-                        st.warning(f"Could not save analyses: {e}")
-                except Exception as e:
-                    st.error(f"Summarization failed: {e}")
-        else:
-            st.success(
-                f"{len(st.session_state.bulk_cluster_summaries)} cluster summaries ready."
-            )
-            with st.expander("Preview cluster summaries"):
-                for cs in st.session_state.bulk_cluster_summaries:
-                    st.write(f"**{cs.cluster_name}** ({cs.file_count} files)")
-                    st.write(cs.summary)
-                    st.divider()
-
-    # ── Step 5: Build process document ───────────────────────────────────────
-    if st.session_state.bulk_cluster_summaries:
-        st.subheader("Step 5 — Build Process Document")
-        st.write(
-            "Synthesize the cluster summaries into one integrated process document. "
-            "This is the same document you'll see in the Review Process Document page."
-        )
-
-        if st.button("📝 Build Process Document"):
-            builder = ProcessDocumentBuilder()
-            section_progress = st.progress(0, text="Starting…")
-            section_status = st.empty()
-
-            def on_section(label, idx, total):
-                section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
-                section_status.write(f"Generating: **{label}**")
-
-            ctx_block = (
-                st.session_state.process_context.to_prompt_block()
-                if st.session_state.process_context else ""
-            )
-            try:
-                process_doc = builder.build_from_cluster_summaries(
-                    st.session_state.bulk_cluster_summaries,
-                    progress_callback=on_section,
-                    context_block=ctx_block,
-                )
-                section_progress.progress(1.0, text="Done!")
-                section_status.empty()
-                st.session_state.process_document = process_doc
-
-                try:
-                    st.session_state.storage.save_process_document(
-                        _ensure_session(),
-                        process_doc,
-                        version="v1",
-                    )
-                    st.success(f"Process document built and saved to session: **{st.session_state.current_session}**. Navigate to **Review Process Document** to continue.")
-                except Exception as save_err:
-                    st.success("Process document built! Navigate to **Review Process Document** to continue.")
-                    st.warning(f"Could not save: {save_err}")
-                st.balloons()
-            except Exception as e:
-                st.error(f"Process document build failed: {e}")
-
-        if st.session_state.process_document:
-            st.info(
-                "✅ Process document is ready. Use the sidebar to navigate to "
-                "**Review Process Document → Gap Analysis → Questions → …**"
-            )
-
-
 def _add_content_to_docx(docx, content: str) -> None:
     """Convert LLM markdown-style output into Word paragraphs."""
     import re
@@ -1385,10 +1379,8 @@ def main():
     page = render_sidebar()
 
     # Main content
-    if page == "Upload Documents":
-        render_upload_page()
-    elif page == "Bulk Load (130+ Files)":
-        render_bulk_load_page()
+    if page == "Group Documents":
+        render_group_documents_page()
     elif page == "Define Context":
         render_context_page()
     elif page == "Analyze":
@@ -1404,7 +1396,7 @@ def main():
 
     # Footer
     st.divider()
-    col1, col2, col3 = st.columns(3)
+    _, col2, _ = st.columns(3)
     with col2:
         st.caption("Document Analysis System v2.0 - With Session Management & Document Refinement")
 
