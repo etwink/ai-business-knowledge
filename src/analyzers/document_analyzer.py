@@ -26,6 +26,7 @@ class ProcessDocument:
     decision_points: str
     systems_and_components: str
     appendix: str = ""
+    process_flow_diagram: str = ""  # Mermaid flowchart syntax
 
 
 @dataclass
@@ -116,6 +117,7 @@ class ProcessDocumentBuilder:
         "decision_points",
         "systems_and_components",
         "appendix",
+        "process_flow_diagram",
     ]
     _TOKENS_PER_SECTION = 40000
 
@@ -174,6 +176,7 @@ class ProcessDocumentBuilder:
             decision_points=results.get("decision_points", ""),
             systems_and_components=results.get("systems_and_components", ""),
             appendix=results.get("appendix", ""),
+            process_flow_diagram=results.get("process_flow_diagram", ""),
         )
 
     @staticmethod

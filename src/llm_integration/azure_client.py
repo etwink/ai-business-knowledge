@@ -273,6 +273,21 @@ Process Document:
             "what it does, who is responsible for it, and how it connects to the rest of "
             "the system. Write as if creating a reference guide for a new team member."
         ),
+        "process_flow_diagram": (
+            "Generate a Mermaid flowchart diagram of the end-to-end process flow.\n"
+            "Output ONLY valid Mermaid syntax — no markdown fences, no explanation, no prose.\n"
+            "Rules:\n"
+            "- First line must be: flowchart TD\n"
+            "- Process steps: rectangle  A[Step Name]\n"
+            "- Decision points: diamond   B{Condition?}\n"
+            "- Data stores / files: cylinder  C[(File or DB)]\n"
+            "- External systems: stadium  D([External System])\n"
+            "- Arrows: A --> B  or  A -->|label| B\n"
+            "- Keep it to 10–20 nodes for readability.\n"
+            "- Node IDs must be short alphanumeric tokens (A, B, CALC, etc.).\n"
+            "- Labels must not contain parentheses, quotes, or special characters except hyphens.\n"
+            "Focus on the business process flow from trigger to final outcome."
+        ),
         "appendix": (
             "Create a reference appendix containing the following sub-sections. "
             "Each sub-section should begin with a clear heading.\n\n"
@@ -300,8 +315,17 @@ Process Document:
             f"--- Cluster {i+1} ---\n{s}" for i, s in enumerate(cluster_summaries)
         )
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
-        section_label = section_key.replace("_", " ").upper()
         context_part = f"\n{context_block}\n" if context_block else ""
+
+        if section_key == "process_flow_diagram":
+            return (
+                f"You are generating a Mermaid flowchart for a business process.\n"
+                f"{context_part}\n"
+                f"Cluster Summaries:\n{combined}\n\n"
+                f"{instruction}"
+            )
+
+        section_label = section_key.replace("_", " ").upper()
         return (
             f"You are writing one section of a business process document.\n"
             f"{cls._AUDIENCE_NOTE}\n"
@@ -321,8 +345,17 @@ Process Document:
         """Build a prompt for a single process document section using document summaries."""
         combined = "\n\n".join(f"Document {i+1}:\n{s}" for i, s in enumerate(summaries))
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
-        section_label = section_key.replace("_", " ").upper()
         context_part = f"\n{context_block}\n" if context_block else ""
+
+        if section_key == "process_flow_diagram":
+            return (
+                f"You are generating a Mermaid flowchart for a business process.\n"
+                f"{context_part}\n"
+                f"Document Summaries:\n{combined}\n\n"
+                f"{instruction}"
+            )
+
+        section_label = section_key.replace("_", " ").upper()
         return (
             f"You are writing one section of a business process document.\n"
             f"{cls._AUDIENCE_NOTE}\n"

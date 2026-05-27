@@ -23,6 +23,7 @@ from src.analyzers import (
 from src.utils import get_supported_documents, validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent, ProcessContext
+from src.rag import KnowledgeBase, RAGAgent
 import config
 
 
@@ -65,6 +66,11 @@ def initialize_session():
         st.session_state.chat_messages = []
     if 'document_updates' not in st.session_state:
         st.session_state.document_updates = {}  # doc_name -> list[DocumentUpdate]
+    # Knowledge base / RAG chat state
+    if 'rag_agent' not in st.session_state:
+        st.session_state.rag_agent = None
+    if 'rag_messages' not in st.session_state:
+        st.session_state.rag_messages = []
 
 
 def _ensure_session() -> str:
@@ -130,6 +136,7 @@ def render_sidebar():
                             decision_points=doc.get('decision_points', ''),
                             systems_and_components=doc.get('systems_and_components', ''),
                             appendix=doc.get('appendix', ''),
+                            process_flow_diagram=doc.get('process_flow_diagram', ''),
                         )
                     
                     if 'gap_analysis' in session_data:
@@ -192,6 +199,7 @@ def render_sidebar():
                 "Review Process Document",
                 "Gap Analysis",
                 "Chat",
+                "Knowledge Chat",
             ]
         )
 
@@ -431,10 +439,21 @@ def render_process_document_page():
             st.subheader("Appendix")
             st.write(doc.appendix)
 
-        # Export button
-        if st.button("📥 Export as Markdown"):
-            appendix_section = f"\n\n## Appendix\n{doc.appendix}" if doc.appendix else ""
-            markdown = f"""# Process Document
+        if doc.process_flow_diagram:
+            st.divider()
+            st.subheader("📊 Process Flow Diagram")
+            _render_mermaid(doc.process_flow_diagram, height=560)
+            with st.expander("View / copy Mermaid source"):
+                st.code(doc.process_flow_diagram, language="text")
+
+        # Export buttons
+        st.divider()
+        appendix_section = f"\n\n## Appendix\n{doc.appendix}" if doc.appendix else ""
+        diagram_section = (
+            f"\n\n## Process Flow Diagram\n```mermaid\n{doc.process_flow_diagram}\n```"
+            if doc.process_flow_diagram else ""
+        )
+        markdown = f"""# Process Document
 
 ## Overview
 {doc.overview}
@@ -452,13 +471,22 @@ def render_process_document_page():
 {doc.decision_points}
 
 ## Systems & Components
-{doc.systems_and_components}{appendix_section}
+{doc.systems_and_components}{appendix_section}{diagram_section}
 """
+        col1, col2 = st.columns(2)
+        with col1:
             st.download_button(
-                label="Download Markdown",
+                label="📥 Download as Markdown",
                 data=markdown,
                 file_name="process_document.md",
-                mime="text/markdown"
+                mime="text/markdown",
+            )
+        with col2:
+            st.download_button(
+                label="📄 Download as Word",
+                data=_generate_word_doc(doc),
+                file_name="process_document.docx",
+                mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
             )
 
 
@@ -1050,6 +1078,240 @@ def render_bulk_load_page():
             )
 
 
+def _add_content_to_docx(docx, content: str) -> None:
+    """Convert LLM markdown-style output into Word paragraphs."""
+    import re
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped:
+            continue
+        if stripped.startswith("### "):
+            docx.add_heading(stripped[4:].strip(), level=3)
+        elif stripped.startswith("## "):
+            docx.add_heading(stripped[3:].strip(), level=2)
+        elif stripped.startswith("# "):
+            docx.add_heading(stripped[2:].strip(), level=2)
+        elif re.match(r"^[-*•]\s+", stripped):
+            text = re.sub(r"^[-*•]\s+", "", stripped)
+            text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+            docx.add_paragraph(text, style="List Bullet")
+        elif re.match(r"^\d+[.)]\s+", stripped):
+            text = re.sub(r"^\d+[.)]\s+", "", stripped)
+            text = re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+            docx.add_paragraph(text, style="List Number")
+        else:
+            text = re.sub(r"\*\*(.+?)\*\*", r"\1", stripped)
+            docx.add_paragraph(text)
+
+
+def _generate_word_doc(doc) -> bytes:
+    """Build a Word document from a ProcessDocument and return raw bytes."""
+    import io
+    from docx import Document as DocxDocument
+    from docx.shared import Pt
+
+    d = DocxDocument()
+    d.add_heading("Process Document", 0)
+
+    sections = [
+        ("Overview", doc.overview),
+        ("Integrated Processes", doc.integrated_processes),
+        ("Dependencies", doc.dependencies),
+        ("Data Flow", doc.data_flow),
+        ("Decision Points", doc.decision_points),
+        ("Systems & Components", doc.systems_and_components),
+    ]
+    if doc.appendix:
+        sections.append(("Appendix", doc.appendix))
+
+    for title, content in sections:
+        d.add_heading(title, level=1)
+        _add_content_to_docx(d, content)
+
+    if doc.process_flow_diagram:
+        d.add_heading("Process Flow Diagram", level=1)
+        d.add_paragraph(
+            "The diagram below uses Mermaid flowchart syntax. "
+            "To render it visually, paste the code at https://mermaid.live"
+        )
+        code_para = d.add_paragraph(doc.process_flow_diagram)
+        for run in code_para.runs:
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
+
+
+def _render_mermaid(diagram_code: str, height: int = 500) -> None:
+    """Render a Mermaid diagram using the Mermaid.js CDN via st.components."""
+    # Strip markdown code fences if the LLM wrapped the output
+    clean = diagram_code.strip()
+    for fence in ("```mermaid", "```"):
+        if clean.startswith(fence):
+            clean = clean[len(fence):]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+
+    html = f"""
+<!DOCTYPE html>
+<html>
+<head>
+  <script src="https://cdn.jsdelivr.net/npm/mermaid@10/dist/mermaid.min.js"></script>
+  <script>mermaid.initialize({{startOnLoad:true, theme:'default', securityLevel:'loose'}});</script>
+  <style>
+    body {{ margin: 0; padding: 8px; background: #fff; }}
+    .mermaid {{ width: 100%; overflow: auto; }}
+  </style>
+</head>
+<body>
+  <div class="mermaid">{clean}</div>
+</body>
+</html>"""
+    st.components.v1.html(html, height=height, scrolling=True)
+
+
+def render_knowledge_chat_page() -> None:
+    """RAG-powered Q&A over the original source documents."""
+    st.header("🔎 Knowledge Chat")
+    st.write(
+        "Ask questions about the process — answers are pulled directly from the "
+        "original source files (Word, Excel, code). "
+        "This is separate from the document-generation pipeline."
+    )
+
+    # Determine which files are available to index
+    scanned = st.session_state.get("bulk_scanned")
+    all_files = []
+    if scanned:
+        all_files = scanned.cobol + scanned.code + scanned.word + scanned.excel
+    elif st.session_state.uploaded_files:
+        all_files = [
+            f for f in st.session_state.uploaded_files if isinstance(f, Path)
+        ]
+
+    if not all_files:
+        st.warning(
+            "No documents loaded yet. Go to **Bulk Load** or **Upload Documents** first, "
+            "then come back here to build the knowledge base."
+        )
+        return
+
+    # ── Knowledge base status ─────────────────────────────────────────
+    session = st.session_state.current_session
+    kb_dir = (
+        Path("./analysis_sessions") / session / "knowledge_base"
+        if session
+        else Path("./knowledge_base_temp")
+    )
+    kb = KnowledgeBase(kb_dir)
+
+    if not kb.is_built():
+        st.info(
+            f"The knowledge base has not been built yet. "
+            f"{len(all_files)} files are ready to index."
+        )
+        if st.button("🏗️ Build Knowledge Base", type="primary"):
+            progress_bar = st.progress(0, text="Starting…")
+            status_text = st.empty()
+
+            def on_kb_progress(msg, current, total):
+                frac = current / total if total else 0
+                progress_bar.progress(frac, text=msg)
+                status_text.write(msg)
+
+            try:
+                n_chunks = kb.build(all_files, progress_callback=on_kb_progress)
+                progress_bar.progress(1.0, text="Done!")
+                status_text.empty()
+                st.success(
+                    f"Knowledge base built: {n_chunks} chunks from {len(all_files)} files."
+                )
+                # Initialise agent immediately
+                st.session_state.rag_agent = RAGAgent(kb)
+                st.session_state.rag_messages = []
+                st.rerun()
+            except Exception as e:
+                st.error(f"Failed to build knowledge base: {e}")
+        return
+
+    # ── Initialise agent if not already loaded ────────────────────────
+    if st.session_state.rag_agent is None:
+        st.session_state.rag_agent = RAGAgent(kb)
+        stats = kb.get_stats()
+        st.success(
+            f"Knowledge base loaded: {stats['chunks']} chunks from {stats['files']} files."
+        )
+
+    agent: RAGAgent = st.session_state.rag_agent
+    stats = kb.get_stats()
+
+    col1, col2, col3 = st.columns(3)
+    col1.metric("Source files", stats["files"])
+    col2.metric("Index chunks", stats["chunks"])
+    col3.metric("Messages", len(st.session_state.rag_messages) // 2)
+
+    if st.button("🗑️ Clear Conversation"):
+        agent.reset()
+        st.session_state.rag_messages = []
+        st.rerun()
+
+    if st.button("🔄 Rebuild Knowledge Base"):
+        import shutil
+        if kb_dir.exists():
+            shutil.rmtree(kb_dir)
+        st.session_state.rag_agent = None
+        st.session_state.rag_messages = []
+        st.rerun()
+
+    st.divider()
+
+    # ── Chat history ──────────────────────────────────────────────────
+    for msg in st.session_state.rag_messages:
+        with st.chat_message(msg["role"]):
+            st.write(msg["content"])
+            if msg.get("sources"):
+                with st.expander("📄 Source excerpts used"):
+                    for src in msg["sources"]:
+                        score_pct = int(src["score"] * 100)
+                        st.markdown(
+                            f"**{src['source_file']}** — relevance {score_pct}%\n\n"
+                            f"> {src['text'][:300]}{'…' if len(src['text']) > 300 else ''}"
+                        )
+
+    # ── Input ──────────────────────────────────────────────────────────
+    if user_input := st.chat_input("Ask anything about the process or documents…"):
+        st.session_state.rag_messages.append({"role": "user", "content": user_input})
+        with st.chat_message("user"):
+            st.write(user_input)
+
+        with st.chat_message("assistant"):
+            with st.spinner("Searching knowledge base…"):
+                try:
+                    answer, sources = agent.chat(user_input)
+                except Exception as e:
+                    answer = f"Error generating answer: {e}"
+                    sources = []
+            st.write(answer)
+            if sources:
+                with st.expander("📄 Source excerpts used"):
+                    for src in sources:
+                        score_pct = int(src["score"] * 100)
+                        st.markdown(
+                            f"**{src['source_file']}** — relevance {score_pct}%\n\n"
+                            f"> {src['text'][:300]}{'…' if len(src['text']) > 300 else ''}"
+                        )
+
+        st.session_state.rag_messages.append({
+            "role": "assistant",
+            "content": answer,
+            "sources": sources,
+        })
+        st.rerun()
+
+
 def main():
     """Main application entry point."""
     st.set_page_config(
@@ -1087,6 +1349,8 @@ def main():
         render_gap_analysis_page()
     elif page == "Chat":
         render_chat_page()
+    elif page == "Knowledge Chat":
+        render_knowledge_chat_page()
 
     # Footer
     st.divider()

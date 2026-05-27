@@ -78,6 +78,7 @@ class AnalysisStorage:
             "decision_points": process_doc.decision_points,
             "systems_and_components": process_doc.systems_and_components,
             "appendix": process_doc.appendix,
+            "process_flow_diagram": process_doc.process_flow_diagram,
         }
         
         file_path = session_dir / f"process_document_{version}.json"
