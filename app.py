@@ -137,6 +137,7 @@ def render_sidebar():
                             systems_and_components=doc.get('systems_and_components', ''),
                             appendix=doc.get('appendix', ''),
                             process_flow_diagram=doc.get('process_flow_diagram', ''),
+                            process_flow_ascii=doc.get('process_flow_ascii', ''),
                         )
                     
                     if 'gap_analysis' in session_data:
@@ -954,6 +955,36 @@ def render_bulk_load_page():
                 st.session_state.bulk_cluster_summaries = None
                 st.rerun()
 
+    # ── Step 3.5: Define Context (gate before summarisation) ─────────────────
+    if st.session_state.bulk_clusters:
+        st.subheader("Step 3.5 — Define Context (Optional but Recommended)")
+        ctx = st.session_state.process_context
+        if ctx and ctx.is_set():
+            with st.expander("✅ Context is set — click to view or change", expanded=False):
+                st.write(ctx.to_prompt_block())
+                if st.button("✏️ Edit Context", key="bulk_edit_context"):
+                    st.session_state.process_context = None
+                    st.rerun()
+        else:
+            st.info(
+                "No process context has been defined yet. You can proceed without one, "
+                "but providing context helps the LLM produce more accurate section content. "
+                "Set it here or visit the **Define Context** page for the full guided experience."
+            )
+            with st.expander("Quick-set context", expanded=True):
+                quick_ctx_input = st.text_area(
+                    "Briefly describe what this set of documents is about "
+                    "(e.g. 'Payroll processing system for a mid-size manufacturer — COBOL batch jobs on IBM z/OS')",
+                    height=80,
+                    key="bulk_quick_ctx",
+                )
+                if st.button("💾 Save Quick Context", key="bulk_save_quick_ctx") and quick_ctx_input.strip():
+                    st.session_state.process_context = ProcessContext(
+                        process_description=quick_ctx_input.strip()
+                    )
+                    st.success("Context saved.")
+                    st.rerun()
+
     # ── Step 4: Summarise clusters ────────────────────────────────────────────
     if st.session_state.bulk_clusters:
         st.subheader("Step 4 — Summarize Clusters")
@@ -1128,7 +1159,13 @@ def _generate_word_doc(doc) -> bytes:
         d.add_heading(title, level=1)
         _add_content_to_docx(d, content)
 
-    if doc.process_flow_diagram:
+    if getattr(doc, 'process_flow_ascii', ''):
+        d.add_heading("Process Flow Diagram", level=1)
+        code_para = d.add_paragraph(doc.process_flow_ascii)
+        for run in code_para.runs:
+            run.font.name = "Courier New"
+            run.font.size = Pt(9)
+    elif doc.process_flow_diagram:
         d.add_heading("Process Flow Diagram", level=1)
         d.add_paragraph(
             "The diagram below uses Mermaid flowchart syntax. "
@@ -1224,10 +1261,19 @@ def render_knowledge_chat_page() -> None:
 
             try:
                 n_chunks = kb.build(all_files, progress_callback=on_kb_progress)
+
+                # Also index the generated process document as tier-1 (highest priority)
+                proc_doc = st.session_state.get("process_document")
+                extra_chunks = 0
+                if proc_doc:
+                    status_text.write("Indexing generated process document…")
+                    extra_chunks = kb.index_process_document(proc_doc)
+
                 progress_bar.progress(1.0, text="Done!")
                 status_text.empty()
+                extra_msg = f" + {extra_chunks} process-doc chunks" if extra_chunks else ""
                 st.success(
-                    f"Knowledge base built: {n_chunks} chunks from {len(all_files)} files."
+                    f"Knowledge base built: {n_chunks} chunks from {len(all_files)} files{extra_msg}."
                 )
                 # Initialise agent immediately
                 st.session_state.rag_agent = RAGAgent(kb)
@@ -1239,6 +1285,10 @@ def render_knowledge_chat_page() -> None:
 
     # ── Initialise agent if not already loaded ────────────────────────
     if st.session_state.rag_agent is None:
+        # Re-index process document on load if available and not yet in the KB
+        proc_doc = st.session_state.get("process_document")
+        if proc_doc:
+            kb.index_process_document(proc_doc)
         st.session_state.rag_agent = RAGAgent(kb)
         stats = kb.get_stats()
         st.success(

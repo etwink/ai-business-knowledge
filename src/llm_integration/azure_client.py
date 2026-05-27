@@ -273,6 +273,23 @@ Process Document:
             "what it does, who is responsible for it, and how it connects to the rest of "
             "the system. Write as if creating a reference guide for a new team member."
         ),
+        "process_flow_ascii": (
+            "Generate a plain-text process flow diagram suitable for PRINTING ON PAPER.\n"
+            "Rules:\n"
+            "- Use Unicode box-drawing characters for the diagram structure.\n"
+            "- Rectangular process steps:  ┌─────────────┐\n"
+            "                              │  Step Name  │\n"
+            "                              └─────────────┘\n"
+            "- Diamond decision points:       ╱           ╲\n"
+            "                               ╱  Question?   ╲\n"
+            "                               ╲              ╱\n"
+            "                                ╲            ╱\n"
+            "- Vertical flow: │ and ▼\n"
+            "- Horizontal branches: ──── and → with Yes/No labels\n"
+            "- Keep step labels short (max 35 characters).\n"
+            "- Aim for 10–18 nodes so it fits on one printed page.\n"
+            "- Output ONLY the diagram — no Mermaid syntax, no explanation, no prose."
+        ),
         "process_flow_diagram": (
             "Generate a Mermaid flowchart diagram of the end-to-end process flow.\n"
             "Output ONLY valid Mermaid syntax — no markdown fences, no explanation, no prose.\n"
@@ -317,9 +334,9 @@ Process Document:
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""
 
-        if section_key == "process_flow_diagram":
+        if section_key in ("process_flow_diagram", "process_flow_ascii"):
             return (
-                f"You are generating a Mermaid flowchart for a business process.\n"
+                f"You are generating a process flow diagram for a business process.\n"
                 f"{context_part}\n"
                 f"Cluster Summaries:\n{combined}\n\n"
                 f"{instruction}"
@@ -347,9 +364,9 @@ Process Document:
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""
 
-        if section_key == "process_flow_diagram":
+        if section_key in ("process_flow_diagram", "process_flow_ascii"):
             return (
-                f"You are generating a Mermaid flowchart for a business process.\n"
+                f"You are generating a process flow diagram for a business process.\n"
                 f"{context_part}\n"
                 f"Document Summaries:\n{combined}\n\n"
                 f"{instruction}"

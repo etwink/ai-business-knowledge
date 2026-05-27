@@ -1,23 +1,33 @@
 """
 Knowledge base: chunk source documents, embed with sentence-transformers,
 store embeddings + chunk metadata on disk for fast retrieval.
+
+Tier system (higher tier = boosted score at retrieval time):
+  Tier 1 — Generated process document  (most authoritative summary)
+  Tier 2 — Word / Doc files            (business documentation)
+  Tier 3 — Everything else             (code, Excel, COBOL, etc.)
 """
 
 from __future__ import annotations
 
 import json
 import re
-from dataclasses import dataclass, asdict
+from dataclasses import dataclass, asdict, field
 from pathlib import Path
 
 import numpy as np
 
-CHUNK_SIZE = 800       # characters per chunk
-CHUNK_OVERLAP = 150    # overlap between consecutive chunks
+CHUNK_SIZE = 800
+CHUNK_OVERLAP = 150
 _EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 _EMBED_BATCH = 32
 
-# Module-level singleton so the model is only loaded once per process.
+# Multiplicative boost applied to cosine scores before ranking.
+_TIER_BOOST: dict[int, float] = {1: 1.5, 2: 1.2, 3: 1.0}
+
+_WORD_EXTENSIONS = {".doc", ".docx"}
+
+# Module-level singleton so the model loads only once per process.
 _model = None
 
 
@@ -36,6 +46,7 @@ class Chunk:
     file_type: str
     chunk_index: int
     char_start: int
+    tier: int = 3   # 1=process_doc, 2=word, 3=other
 
 
 class KnowledgeBase:
@@ -65,51 +76,69 @@ class KnowledgeBase:
     def build(
         self,
         files: list[Path],
-        progress_callback=None,   # (message: str, current: int, total: int)
+        progress_callback=None,
     ) -> int:
         """Chunk + embed all files and persist to disk.  Returns total chunk count."""
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
-        # ── Step 1: chunk ─────────────────────────────────────────────
         all_chunks: list[Chunk] = []
         for i, path in enumerate(files):
             if progress_callback:
                 progress_callback(f"Reading {path.name}", i + 1, len(files) * 2)
-            all_chunks.extend(_chunk_file(path))
+            tier = 2 if path.suffix.lower() in _WORD_EXTENSIONS else 3
+            all_chunks.extend(_chunk_file(path, tier=tier))
 
         if not all_chunks:
             return 0
 
-        # ── Step 2: embed in batches ──────────────────────────────────
-        model = _get_model()
-        texts = [c.text for c in all_chunks]
-        embedding_batches: list[np.ndarray] = []
-        base = len(files)  # progress offset after chunking phase
-        for batch_start in range(0, len(texts), _EMBED_BATCH):
-            batch = texts[batch_start: batch_start + _EMBED_BATCH]
-            emb = model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
-            embedding_batches.append(emb)
-            if progress_callback:
-                done = min(batch_start + _EMBED_BATCH, len(texts))
-                progress_callback(
-                    f"Embedding {done}/{len(texts)} chunks",
-                    base + done,
-                    base + len(texts),
-                )
-
-        embeddings = np.vstack(embedding_batches).astype(np.float32)
-
-        # ── Step 3: persist ───────────────────────────────────────────
-        with open(self.persist_dir / "chunks.json", "w", encoding="utf-8") as f:
-            json.dump([asdict(c) for c in all_chunks], f, ensure_ascii=False)
-        np.save(str(self.persist_dir / "embeddings.npy"), embeddings)
-
-        self._chunks = all_chunks
-        self._embeddings = embeddings
+        embeddings = self._embed(all_chunks, progress_callback, base=len(files))
+        self._persist(all_chunks, embeddings)
         return len(all_chunks)
 
+    def index_process_document(self, process_doc) -> int:
+        """
+        Add the generated process document sections as tier-1 chunks.
+        Can be called after build() or on an already-loaded KB.
+        Merges into the existing index and re-persists.
+        Returns the number of new chunks added.
+        """
+        self._ensure_loaded()
+
+        section_map = {
+            "Overview": process_doc.overview,
+            "Integrated Processes": process_doc.integrated_processes,
+            "Dependencies": process_doc.dependencies,
+            "Data Flow": process_doc.data_flow,
+            "Decision Points": process_doc.decision_points,
+            "Systems and Components": process_doc.systems_and_components,
+            "Appendix": process_doc.appendix,
+        }
+
+        new_chunks: list[Chunk] = []
+        for section_name, content in section_map.items():
+            if not content:
+                continue
+            source = f"[Process Document — {section_name}]"
+            new_chunks.extend(_chunk_text(content, source_file=source, file_type="process_document", tier=1))
+
+        if not new_chunks:
+            return 0
+
+        model = _get_model()
+        texts = [c.text for c in new_chunks]
+        new_emb = model.encode(texts, normalize_embeddings=True, show_progress_bar=False).astype(np.float32)
+
+        merged_chunks = self._chunks + new_chunks
+        merged_emb = (
+            np.vstack([self._embeddings, new_emb])
+            if self._embeddings is not None and len(self._embeddings)
+            else new_emb
+        )
+        self._persist(merged_chunks, merged_emb)
+        return len(new_chunks)
+
     def search(self, query: str, top_k: int = 6) -> list[dict]:
-        """Return the top-k most relevant chunks for query (cosine similarity)."""
+        """Return top-k chunks ranked by tier-boosted cosine similarity."""
         self._ensure_loaded()
         if self._embeddings is None or not self._chunks:
             return []
@@ -117,19 +146,32 @@ class KnowledgeBase:
         model = _get_model()
         q_emb = model.encode([query], normalize_embeddings=True)[0].astype(np.float32)
 
-        # Embeddings are already L2-normalised → dot product = cosine similarity
-        scores: np.ndarray = self._embeddings @ q_emb
-        top_indices = np.argsort(scores)[::-1][:top_k]
+        raw_scores: np.ndarray = self._embeddings @ q_emb
 
+        # Apply tier boost
+        boosts = np.array(
+            [_TIER_BOOST.get(c.tier, 1.0) for c in self._chunks], dtype=np.float32
+        )
+        boosted = raw_scores * boosts
+
+        top_indices = np.argsort(boosted)[::-1][:top_k]
         return [
-            {**asdict(self._chunks[i]), "score": float(scores[i])}
+            {**asdict(self._chunks[i]), "score": float(raw_scores[i]),
+             "boosted_score": float(boosted[i])}
             for i in top_indices
         ]
 
     def get_stats(self) -> dict:
         self._ensure_loaded()
         unique_files = {c.source_file for c in self._chunks}
-        return {"chunks": len(self._chunks), "files": len(unique_files)}
+        tier_counts = {1: 0, 2: 0, 3: 0}
+        for c in self._chunks:
+            tier_counts[c.tier] = tier_counts.get(c.tier, 0) + 1
+        return {
+            "chunks": len(self._chunks),
+            "files": len(unique_files),
+            "tier_counts": tier_counts,
+        }
 
     # ------------------------------------------------------------------
     # Internal helpers
@@ -145,45 +187,72 @@ class KnowledgeBase:
                 self._chunks = [Chunk(**c) for c in json.load(f)]
             self._embeddings = np.load(str(emb_path))
 
+    def _embed(
+        self,
+        chunks: list[Chunk],
+        progress_callback=None,
+        base: int = 0,
+    ) -> np.ndarray:
+        model = _get_model()
+        texts = [c.text for c in chunks]
+        batches: list[np.ndarray] = []
+        for i in range(0, len(texts), _EMBED_BATCH):
+            batch = texts[i: i + _EMBED_BATCH]
+            batches.append(
+                model.encode(batch, normalize_embeddings=True, show_progress_bar=False)
+            )
+            if progress_callback:
+                done = min(i + _EMBED_BATCH, len(texts))
+                progress_callback(
+                    f"Embedding {done}/{len(texts)} chunks",
+                    base + done,
+                    base + len(texts),
+                )
+        return np.vstack(batches).astype(np.float32)
+
+    def _persist(self, chunks: list[Chunk], embeddings: np.ndarray) -> None:
+        self.persist_dir.mkdir(parents=True, exist_ok=True)
+        with open(self.persist_dir / "chunks.json", "w", encoding="utf-8") as f:
+            json.dump([asdict(c) for c in chunks], f, ensure_ascii=False)
+        np.save(str(self.persist_dir / "embeddings.npy"), embeddings)
+        self._chunks = chunks
+        self._embeddings = embeddings
+
 
 # ------------------------------------------------------------------
-# File chunking
+# Chunking helpers
 # ------------------------------------------------------------------
 
-def _chunk_file(path: Path) -> list[Chunk]:
-    """Load a file with the document loader and split it into overlapping chunks."""
-    try:
-        from src.document_loaders import get_loader
-        doc = get_loader(path).load()
-        content = doc.content
-        file_type = doc.file_type
-    except Exception:
-        return []
-
-    # Remove excessive whitespace runs while preserving paragraph breaks
-    content = re.sub(r"\n{3,}", "\n\n", content).strip()
-    if not content:
+def _chunk_text(
+    text: str,
+    source_file: str,
+    file_type: str,
+    tier: int = 3,
+) -> list[Chunk]:
+    """Split arbitrary text into overlapping Chunk objects."""
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    if not text:
         return []
 
     chunks: list[Chunk] = []
     start = 0
     idx = 0
-    while start < len(content):
-        end = min(start + CHUNK_SIZE, len(content))
-        # Try to break on a whitespace boundary so chunks don't cut mid-word
-        if end < len(content):
-            boundary = content.rfind(" ", start, end)
+    while start < len(text):
+        end = min(start + CHUNK_SIZE, len(text))
+        if end < len(text):
+            boundary = text.rfind(" ", start, end)
             if boundary > start:
                 end = boundary
 
-        text = content[start:end].strip()
-        if text:
+        chunk_text = text[start:end].strip()
+        if chunk_text:
             chunks.append(Chunk(
-                text=text,
-                source_file=path.name,
+                text=chunk_text,
+                source_file=source_file,
                 file_type=file_type,
                 chunk_index=idx,
                 char_start=start,
+                tier=tier,
             ))
             idx += 1
 
@@ -191,3 +260,13 @@ def _chunk_file(path: Path) -> list[Chunk]:
         start = next_start if next_start > start else end
 
     return chunks
+
+
+def _chunk_file(path: Path, tier: int = 3) -> list[Chunk]:
+    """Load a file via the document loader and split into overlapping chunks."""
+    try:
+        from src.document_loaders import get_loader
+        doc = get_loader(path).load()
+        return _chunk_text(doc.content, source_file=path.name, file_type=doc.file_type, tier=tier)
+    except Exception:
+        return []
