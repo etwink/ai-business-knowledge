@@ -23,6 +23,9 @@ _EMBEDDING_MODEL = "all-MiniLM-L6-v2"
 _EMBED_BATCH = 32
 
 # Multiplicative boost applied to cosine scores before ranking.
+# Tier 1 — Word/Doc files (primary source-of-truth business documents)
+# Tier 2 — Generated process document (authoritative summary, but derivative)
+# Tier 3 — Everything else (code, Excel, COBOL, etc.)
 _TIER_BOOST: dict[int, float] = {1: 1.5, 2: 1.2, 3: 1.0}
 
 _WORD_EXTENSIONS = {".doc", ".docx"}
@@ -34,8 +37,22 @@ _model = None
 def _get_model():
     global _model
     if _model is None:
-        from sentence_transformers import SentenceTransformer  # type: ignore
-        _model = SentenceTransformer(_EMBEDDING_MODEL)
+        import os
+        import warnings
+
+        # After the model is downloaded once it lives in the local HF cache.
+        # Prevent the library from phoning home on every load — this also
+        # eliminates the "unauthenticated requests" warning.
+        os.environ.setdefault("HF_HUB_OFFLINE", "1")
+
+        # Suppress noisy FutureWarnings from the transformers internals
+        # (e.g. "__path__ alias" deprecation notices).
+        with warnings.catch_warnings():
+            warnings.filterwarnings("ignore", category=FutureWarning)
+            warnings.filterwarnings("ignore", category=UserWarning,
+                                    message=r".*HF Hub.*")
+            from sentence_transformers import SentenceTransformer  # type: ignore
+            _model = SentenceTransformer(_EMBEDDING_MODEL)
     return _model
 
 
@@ -85,7 +102,7 @@ class KnowledgeBase:
         for i, path in enumerate(files):
             if progress_callback:
                 progress_callback(f"Reading {path.name}", i + 1, len(files) * 2)
-            tier = 2 if path.suffix.lower() in _WORD_EXTENSIONS else 3
+            tier = 1 if path.suffix.lower() in _WORD_EXTENSIONS else 3
             all_chunks.extend(_chunk_file(path, tier=tier))
 
         if not all_chunks:
@@ -119,7 +136,7 @@ class KnowledgeBase:
             if not content:
                 continue
             source = f"[Process Document — {section_name}]"
-            new_chunks.extend(_chunk_text(content, source_file=source, file_type="process_document", tier=1))
+            new_chunks.extend(_chunk_text(content, source_file=source, file_type="process_document", tier=2))
 
         if not new_chunks:
             return 0
@@ -137,7 +154,7 @@ class KnowledgeBase:
         self._persist(merged_chunks, merged_emb)
         return len(new_chunks)
 
-    def search(self, query: str, top_k: int = 10) -> list[dict]:
+    def search(self, query: str, top_k: int = 25) -> list[dict]:
         """Return top-k chunks ranked by tier-boosted cosine similarity."""
         self._ensure_loaded()
         if self._embeddings is None or not self._chunks:
