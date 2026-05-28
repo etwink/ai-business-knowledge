@@ -177,29 +177,27 @@ class ConversationalAgent:
 
         document_updates: list[DocumentUpdate] = []
 
-        # Build a lookup of unresolved gaps by description for matching
-        unresolved_by_desc: dict[str, GapItem] = {
-            g.description: g for g in self.remaining_gaps
-        }
+        # Build a lookup of unresolved gaps (snapshot before we start resolving)
+        unresolved: list[GapItem] = list(self.remaining_gaps)
 
-        # Parse ALL <<GAP_RESOLVED: summary | doc_name>> markers in the response
+        # Parse ALL <<GAP_RESOLVED: summary | doc_name>> markers in the response.
+        # Use re.DOTALL so summaries that span a line still match.
         for resolved_match in re.finditer(
-            r'<<GAP_RESOLVED:\s*(.+?)\s*\|\s*(.+?)\s*>>', raw
+            r'<<GAP_RESOLVED:\s*(.*?)\s*\|\s*(.*?)\s*>>', raw, re.DOTALL
         ):
             gap_summary_text = resolved_match.group(1).strip()
             doc_name_hint = resolved_match.group(2).strip()
 
-            # Match to the most relevant unresolved gap
-            gap_to_resolve: Optional[GapItem] = None
-            for desc, gap in unresolved_by_desc.items():
-                if not gap.resolved:
-                    gap_to_resolve = gap
-                    break
+            # Find the best-matching unresolved gap by comparing the summary the
+            # LLM emitted against each gap description (case-insensitive word overlap).
+            gap_to_resolve: Optional[GapItem] = self._match_gap(
+                gap_summary_text, unresolved
+            )
 
             if gap_to_resolve:
                 gap_to_resolve.resolved = True
-                gap_to_resolve.resolution = user_message
-                del unresolved_by_desc[gap_to_resolve.description]
+                gap_to_resolve.resolution = gap_summary_text  # what was actually learned
+                unresolved.remove(gap_to_resolve)
 
                 update = self._generate_document_update(
                     doc_name_hint, gap_to_resolve, user_message, gap_summary_text
@@ -209,8 +207,9 @@ class ConversationalAgent:
 
         all_done = "<<ALL_GAPS_RESOLVED>>" in raw or len(self.remaining_gaps) == 0
 
-        # Strip markers before showing to the user
-        clean = re.sub(r'<<GAP_RESOLVED:[^>]+>>', '', raw)
+        # Strip markers before showing to the user.
+        # Use .*? with DOTALL to handle multi-line markers cleanly.
+        clean = re.sub(r'<<GAP_RESOLVED:.*?>>', '', raw, flags=re.DOTALL)
         clean = re.sub(r'<<ALL_GAPS_RESOLVED>>', '', clean).strip()
 
         self.chat_history.append({"role": "assistant", "content": clean})
@@ -295,6 +294,23 @@ class ConversationalAgent:
             content=updated,
             gap_addressed=gap_summary,
         )
+
+    def _match_gap(self, summary: str, candidates: list[GapItem]) -> Optional[GapItem]:
+        """Return the unresolved gap whose description best matches the LLM summary.
+
+        Scores by word overlap (case-insensitive). Falls back to the first
+        candidate so we always make progress rather than stalling.
+        """
+        if not candidates:
+            return None
+        summary_words = set(re.findall(r'\w+', summary.lower()))
+        best, best_score = candidates[0], -1
+        for gap in candidates:
+            desc_words = set(re.findall(r'\w+', gap.description.lower()))
+            overlap = len(summary_words & desc_words)
+            if overlap > best_score:
+                best, best_score = gap, overlap
+        return best
 
     def _find_document(self, name_hint: str) -> Optional[AnalysisResult]:
         """Return the analysis whose name best matches name_hint."""

@@ -893,18 +893,22 @@ def render_chat_page():
         for g in agent.gap_queue:
             by_category[g.category].append(g)
 
+        import html as _html
         gap_rows = []
         for category, items in by_category.items():
             gap_rows.append(
                 f"<div style='font-size:0.75rem;font-weight:600;color:#888;"
                 f"text-transform:uppercase;margin-top:8px;padding:2px 0'>"
-                f"{category}</div>"
+                f"{_html.escape(category.replace('_', ' '))}</div>"
             )
             for g in items:
                 if g.resolved:
                     icon = "✅"
                     row_style = "color:#4caf50;border-left:3px solid #4caf50;"
-                    tip = f" title='{g.resolution[:120]}'" if g.resolution else ""
+                    tip = (
+                        f" title='{_html.escape(g.resolution[:120])}'"
+                        if g.resolution else ""
+                    )
                 else:
                     icon = "⬜"
                     row_style = "color:#333;border-left:3px solid #ddd;"
@@ -912,7 +916,7 @@ def render_chat_page():
                 gap_rows.append(
                     f"<div{tip} style='font-size:0.82rem;{row_style}"
                     f"padding:4px 0 4px 8px;margin:3px 0;line-height:1.4'>"
-                    f"{icon}&nbsp;{g.description}</div>"
+                    f"{icon}&nbsp;{_html.escape(g.description)}</div>"
                 )
 
         html_content = "\n".join(gap_rows)
