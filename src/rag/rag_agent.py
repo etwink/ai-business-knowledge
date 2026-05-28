@@ -16,14 +16,20 @@ _SYSTEM_PROMPT = (
 
 _MAX_HISTORY_TURNS = 4   # Number of prior exchanges to include for context
 
+_ENRICH_SYSTEM = (
+    "You are a search query optimizer. Your only job is to rewrite a user's question "
+    "into a richer, more specific search query that will retrieve the most relevant "
+    "chunks from a business process knowledge base. "
+    "Output ONLY the enriched query — no explanation, no preamble, no bullet points."
+)
+
 
 class RAGAgent:
     """
     Conversational RAG agent backed by a KnowledgeBase.
 
-    Each call to chat() retrieves relevant chunks, builds a prompt with
-    conversation history, and returns both the LLM answer and the
-    source chunks so the UI can show citations.
+    Each call to chat() enriches the query with LLM context expansion before
+    retrieving chunks, then generates a grounded answer.
     """
 
     def __init__(self, knowledge_base: KnowledgeBase, top_k: int = 6):
@@ -35,18 +41,23 @@ class RAGAgent:
     # Public API
     # ------------------------------------------------------------------
 
-    def chat(self, user_message: str) -> tuple[str, list[dict]]:
+    def chat(self, user_message: str) -> tuple[str, list[dict], str]:
         """
-        Retrieve relevant chunks and generate a grounded answer.
+        Enrich the query, retrieve relevant chunks, and generate a grounded answer.
 
         Returns:
             answer (str) — LLM response
             sources (list[dict]) — retrieved chunks with score, source_file, text
+            enriched_query (str) — the rewritten query used for vector search
         """
         from src.llm_integration import AzureLLMClient
+        llm = AzureLLMClient()
 
-        # Retrieve
-        chunks = self.kb.search(user_message, top_k=self.top_k)
+        # Step 1: Enrich the query before vector search
+        enriched_query = self._enrich_query(user_message, llm)
+
+        # Step 2: Retrieve using the enriched query
+        chunks = self.kb.search(enriched_query, top_k=self.top_k)
 
         # Build context block
         context_parts = []
@@ -70,14 +81,13 @@ class RAGAgent:
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
-        llm = AzureLLMClient()
         answer = llm.query(prompt, system_message=_SYSTEM_PROMPT, max_tokens=3000)
 
         # Update history
         self._history.append({"role": "user", "content": user_message})
         self._history.append({"role": "assistant", "content": answer})
 
-        return answer, chunks
+        return answer, chunks, enriched_query
 
     def reset(self) -> None:
         self._history.clear()
@@ -86,6 +96,30 @@ class RAGAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
+    def _enrich_query(self, user_message: str, llm) -> str:
+        """
+        Rewrite the raw user question into a richer, domain-specific search query.
+
+        Uses recent conversation history so follow-up questions get proper context
+        (e.g. "what about errors?" → "error handling in the payroll batch process").
+        Falls back to the original message if the LLM call fails.
+        """
+        history_text = self._format_history()
+        history_section = f"Recent conversation:\n{history_text}\n\n" if history_text else ""
+
+        prompt = (
+            f"{history_section}"
+            f"User question: {user_message}\n\n"
+            f"Rewrite this into a specific, detailed search query for a business process "
+            f"knowledge base. Expand abbreviations, add relevant domain terms, and make "
+            f"implicit intent explicit. If the question is already specific, return it unchanged."
+        )
+        try:
+            enriched = llm.query(prompt, system_message=_ENRICH_SYSTEM, max_tokens=200)
+            return enriched.strip() or user_message
+        except Exception:
+            return user_message
+
     def _format_history(self) -> str:
         recent = self._history[-(2 * _MAX_HISTORY_TURNS):]
         if not recent:
@@ -93,7 +127,6 @@ class RAGAgent:
         lines = []
         for m in recent:
             role = m["role"].upper()
-            # Truncate long history entries
             content = m["content"][:300] + ("…" if len(m["content"]) > 300 else "")
             lines.append(f"{role}: {content}")
         return "\n".join(lines)

@@ -334,7 +334,7 @@ Process Document:
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""
 
-        if section_key in ("process_flow_diagram", "process_flow_ascii"):
+        if section_key == "process_flow_diagram":
             return (
                 f"You are generating a process flow diagram for a business process.\n"
                 f"{context_part}\n"
@@ -364,7 +364,7 @@ Process Document:
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""
 
-        if section_key in ("process_flow_diagram", "process_flow_ascii"):
+        if section_key == "process_flow_diagram":
             return (
                 f"You are generating a process flow diagram for a business process.\n"
                 f"{context_part}\n"

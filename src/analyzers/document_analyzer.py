@@ -119,7 +119,6 @@ class ProcessDocumentBuilder:
         "systems_and_components",
         "appendix",
         "process_flow_diagram",
-        "process_flow_ascii",
     ]
     _TOKENS_PER_SECTION = 40000
 

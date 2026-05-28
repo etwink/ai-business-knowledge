@@ -137,7 +137,7 @@ class KnowledgeBase:
         self._persist(merged_chunks, merged_emb)
         return len(new_chunks)
 
-    def search(self, query: str, top_k: int = 6) -> list[dict]:
+    def search(self, query: str, top_k: int = 10) -> list[dict]:
         """Return top-k chunks ranked by tier-boosted cosine similarity."""
         self._ensure_loaded()
         if self._embeddings is None or not self._chunks:

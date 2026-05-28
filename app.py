@@ -710,9 +710,24 @@ def render_process_document_page():
         if doc.process_flow_diagram:
             st.divider()
             st.subheader("📊 Process Flow Diagram")
-            _render_mermaid(doc.process_flow_diagram, height=560)
-            with st.expander("View / copy Mermaid source"):
-                st.code(doc.process_flow_diagram, language="text")
+            tab_interactive, tab_png = st.tabs(["Interactive (Mermaid)", "Static PNG"])
+            with tab_interactive:
+                _render_mermaid(doc.process_flow_diagram, height=560)
+                with st.expander("View / copy Mermaid source"):
+                    st.code(doc.process_flow_diagram, language="text")
+            with tab_png:
+                with st.spinner("Rendering PNG…"):
+                    png_bytes = _mermaid_to_png(doc.process_flow_diagram)
+                if png_bytes:
+                    st.image(png_bytes, use_container_width=True)
+                    st.download_button(
+                        "📥 Download diagram PNG",
+                        data=png_bytes,
+                        file_name="process_flow.png",
+                        mime="image/png",
+                    )
+                else:
+                    st.info("PNG rendering unavailable — check network access to mermaid.ink. The Word export will include the Mermaid source as a fallback.")
 
         # Export buttons
         st.divider()
@@ -1129,11 +1144,34 @@ def _add_content_to_docx(docx, content: str) -> None:
             docx.add_paragraph(text)
 
 
+def _mermaid_to_png(mermaid_code: str) -> bytes | None:
+    """Fetch a PNG render of Mermaid syntax from the mermaid.ink public API."""
+    import base64
+    import urllib.request
+    clean = mermaid_code.strip()
+    for fence in ("```mermaid", "```"):
+        if clean.startswith(fence):
+            clean = clean[len(fence):]
+    if clean.endswith("```"):
+        clean = clean[:-3]
+    clean = clean.strip()
+    try:
+        encoded = base64.urlsafe_b64encode(clean.encode()).decode()
+        url = f"https://mermaid.ink/img/{encoded}?bgColor=white"
+        req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+        with urllib.request.urlopen(req, timeout=15) as resp:
+            if resp.status == 200:
+                return resp.read()
+    except Exception:
+        pass
+    return None
+
+
 def _generate_word_doc(doc) -> bytes:
     """Build a Word document from a ProcessDocument and return raw bytes."""
     import io
     from docx import Document as DocxDocument
-    from docx.shared import Pt
+    from docx.shared import Inches, Pt
 
     d = DocxDocument()
     d.add_heading("Process Document", 0)
@@ -1153,22 +1191,20 @@ def _generate_word_doc(doc) -> bytes:
         d.add_heading(title, level=1)
         _add_content_to_docx(d, content)
 
-    if getattr(doc, 'process_flow_ascii', ''):
+    if doc.process_flow_diagram:
         d.add_heading("Process Flow Diagram", level=1)
-        code_para = d.add_paragraph(doc.process_flow_ascii)
-        for run in code_para.runs:
-            run.font.name = "Courier New"
-            run.font.size = Pt(9)
-    elif doc.process_flow_diagram:
-        d.add_heading("Process Flow Diagram", level=1)
-        d.add_paragraph(
-            "The diagram below uses Mermaid flowchart syntax. "
-            "To render it visually, paste the code at https://mermaid.live"
-        )
-        code_para = d.add_paragraph(doc.process_flow_diagram)
-        for run in code_para.runs:
-            run.font.name = "Courier New"
-            run.font.size = Pt(9)
+        png = _mermaid_to_png(doc.process_flow_diagram)
+        if png:
+            d.add_picture(io.BytesIO(png), width=Inches(6.0))
+        else:
+            # Offline fallback: embed Mermaid source as code block
+            d.add_paragraph(
+                "To render this diagram, paste the code below at https://mermaid.live"
+            )
+            code_para = d.add_paragraph(doc.process_flow_diagram)
+            for run in code_para.runs:
+                run.font.name = "Courier New"
+                run.font.size = Pt(9)
 
     buf = io.BytesIO()
     d.save(buf)
@@ -1316,6 +1352,8 @@ def render_knowledge_chat_page() -> None:
     for msg in st.session_state.rag_messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
+            if msg.get("enriched_query") and msg["enriched_query"] != msg.get("raw_query"):
+                st.caption(f"🔍 Searched for: *{msg['enriched_query']}*")
             if msg.get("sources"):
                 with st.expander("📄 Source excerpts used"):
                     for src in msg["sources"]:
@@ -1332,13 +1370,16 @@ def render_knowledge_chat_page() -> None:
             st.write(user_input)
 
         with st.chat_message("assistant"):
-            with st.spinner("Searching knowledge base…"):
+            with st.spinner("Enriching query and searching knowledge base…"):
                 try:
-                    answer, sources = agent.chat(user_input)
+                    answer, sources, enriched_query = agent.chat(user_input)
                 except Exception as e:
                     answer = f"Error generating answer: {e}"
                     sources = []
+                    enriched_query = user_input
             st.write(answer)
+            if enriched_query and enriched_query != user_input:
+                st.caption(f"🔍 Searched for: *{enriched_query}*")
             if sources:
                 with st.expander("📄 Source excerpts used"):
                     for src in sources:
@@ -1352,6 +1393,8 @@ def render_knowledge_chat_page() -> None:
             "role": "assistant",
             "content": answer,
             "sources": sources,
+            "enriched_query": enriched_query,
+            "raw_query": user_input,
         })
         st.rerun()
 
