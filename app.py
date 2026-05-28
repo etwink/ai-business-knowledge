@@ -885,54 +885,45 @@ def render_chat_page():
     total_gaps = len(agent.gap_queue)
     resolved_gaps = sum(1 for g in agent.gap_queue if g.resolved)
 
-    # ── Gap tracker ───────────────────────────────────────────────────────────
+    # ── Gap tracker (scrollable box, sits above the chat) ────────────────────
     if total_gaps > 0:
-        col_gaps, col_chat = st.columns([1, 2])
-        with col_gaps:
-            st.subheader(f"Gaps  ({resolved_gaps}/{total_gaps} resolved)")
-            # Group by category for readability
-            by_category: dict = defaultdict(list)
-            for g in agent.gap_queue:
-                by_category[g.category].append(g)
+        st.subheader(f"Gaps  ({resolved_gaps}/{total_gaps} resolved)")
 
-            # Scrollable container via a fixed-height styled div
-            gap_rows = []
-            for category, items in by_category.items():
-                gap_rows.append(
-                    f"<div style='font-size:0.75rem;font-weight:600;color:#888;"
-                    f"text-transform:uppercase;margin-top:8px;padding:2px 0'>"
-                    f"{category}</div>"
-                )
-                for g in items:
-                    if g.resolved:
-                        icon = "✅"
-                        style = "color:#4caf50;"
-                        tip = f" title='{g.resolution[:120]}'" if g.resolution else ""
-                    else:
-                        icon = "⬜"
-                        style = "color:#333;"
-                        tip = ""
-                    desc = g.description[:80] + ("…" if len(g.description) > 80 else "")
-                    gap_rows.append(
-                        f"<div{tip} style='font-size:0.8rem;{style}padding:3px 0 3px 6px;"
-                        f"border-left:2px solid {'#4caf50' if g.resolved else '#ddd'};margin:2px 0'>"
-                        f"{icon} {desc}</div>"
-                    )
+        by_category: dict = defaultdict(list)
+        for g in agent.gap_queue:
+            by_category[g.category].append(g)
 
-            html_content = "\n".join(gap_rows)
-            st.markdown(
-                f"<div style='max-height:420px;overflow-y:auto;padding:4px 8px;"
-                f"border:1px solid #e0e0e0;border-radius:6px;background:#fafafa'>"
-                f"{html_content}</div>",
-                unsafe_allow_html=True,
+        gap_rows = []
+        for category, items in by_category.items():
+            gap_rows.append(
+                f"<div style='font-size:0.75rem;font-weight:600;color:#888;"
+                f"text-transform:uppercase;margin-top:8px;padding:2px 0'>"
+                f"{category}</div>"
             )
+            for g in items:
+                if g.resolved:
+                    icon = "✅"
+                    row_style = "color:#4caf50;border-left:3px solid #4caf50;"
+                    tip = f" title='{g.resolution[:120]}'" if g.resolution else ""
+                else:
+                    icon = "⬜"
+                    row_style = "color:#333;border-left:3px solid #ddd;"
+                    tip = ""
+                gap_rows.append(
+                    f"<div{tip} style='font-size:0.82rem;{row_style}"
+                    f"padding:4px 0 4px 8px;margin:3px 0;line-height:1.4'>"
+                    f"{icon}&nbsp;{g.description}</div>"
+                )
 
-        # ── Chat section lives in the right column ────────────────────────────
-        with col_chat:
-            _render_chat_column(agent)
-        return   # rest of function rendered inside col_chat helper
+        html_content = "\n".join(gap_rows)
+        st.markdown(
+            f"<div style='max-height:260px;overflow-y:auto;padding:6px 10px;"
+            f"border:1px solid #e0e0e0;border-radius:6px;background:#fafafa;"
+            f"margin-bottom:16px'>"
+            f"{html_content}</div>",
+            unsafe_allow_html=True,
+        )
 
-    # Fallback path when gap list couldn't be shown (total_gaps == 0)
     _render_chat_column(agent)
 
 
