@@ -35,10 +35,6 @@ def initialize_session():
         st.session_state.process_document = None
     if 'gap_analysis' not in st.session_state:
         st.session_state.gap_analysis = None
-    if 'questions' not in st.session_state:
-        st.session_state.questions = []
-    if 'user_answers' not in st.session_state:
-        st.session_state.user_answers = {}
     if 'current_session' not in st.session_state:
         st.session_state.current_session = None
     if 'storage' not in st.session_state:
@@ -1295,7 +1291,7 @@ def render_knowledge_chat_page() -> None:
     col1, col2, col3 = st.columns(3)
     col1.metric("Source files", stats["files"])
     col2.metric("Index chunks", stats["chunks"])
-    col3.metric("Messages", len(st.session_state.rag_messages) // 2)
+    col3.metric("Messages", sum(1 for m in st.session_state.rag_messages if m["role"] == "user"))
 
     if st.button("🗑️ Clear Conversation"):
         agent.reset()

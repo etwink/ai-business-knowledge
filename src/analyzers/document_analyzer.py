@@ -181,45 +181,6 @@ class ProcessDocumentBuilder:
             process_flow_ascii=results.get("process_flow_ascii", ""),
         )
 
-    @staticmethod
-    def _parse_sections(text: str) -> Dict[str, str]:
-        """Parse the generated document into sections."""
-        sections = {}
-        current_section = 'overview'
-        current_content = []
-
-        section_markers = {
-            'overview': 'overview',
-            'integrated processes': 'integrated_processes',
-            'dependencies': 'dependencies',
-            'data flow': 'data_flow',
-            'decision points': 'decision_points',
-            'systems and components': 'systems_and_components'
-        }
-
-        for line in text.split('\n'):
-            lower_line = line.lower()
-
-            # Check if this line starts a new section
-            found_section = False
-            for marker, section_key in section_markers.items():
-                if marker in lower_line and (':' in line or '=' in line):
-                    if current_content:
-                        sections[current_section] = '\n'.join(current_content)
-                    current_section = section_key
-                    current_content = []
-                    found_section = True
-                    break
-
-            if not found_section:
-                current_content.append(line)
-
-        if current_content:
-            sections[current_section] = '\n'.join(current_content)
-
-        return sections
-
-
 class GapAnalyzer:
     """Identifies gaps and missing information in process documents."""
 

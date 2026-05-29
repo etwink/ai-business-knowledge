@@ -1,7 +1,6 @@
 """Document loaders for various file formats."""
 
 from pathlib import Path
-import html.parser
 from html.parser import HTMLParser
 from docx import Document as DocxDocument
 from openpyxl import load_workbook

@@ -386,34 +386,6 @@ Process Document:
         )
 
     @staticmethod
-    def build_process_document_from_clusters_prompt(cluster_summaries: list[str]) -> str:
-        """Build prompt for process document synthesis from hierarchical cluster summaries."""
-        combined = "\n\n".join(
-            f"--- Cluster {i+1} ---\n{s}" for i, s in enumerate(cluster_summaries)
-        )
-        return f"""You are creating a comprehensive business process document from the cluster summaries below.
-Each cluster summarizes a logical subsystem (COBOL programs, policy documents, or business requirement docs).
-
-Your task:
-1. Integrate all clusters into a single, cohesive process document
-2. Show how the subsystems relate to and depend on each other
-3. Trace data flow across subsystem boundaries
-4. Identify the overall end-to-end business workflow
-5. List all systems, files, and components referenced
-6. Highlight key decision points and business rules across subsystems
-
-Cluster Summaries:
-{combined}
-
-Write a detailed process document with these sections:
-OVERVIEW: High-level description of the complete system
-INTEGRATED PROCESSES: Step-by-step end-to-end workflow across all subsystems
-DEPENDENCIES: Inter-subsystem dependencies and call chains
-DATA FLOW: Data inputs, transformations, and outputs across the system
-DECISION POINTS: Key business rules and conditional logic
-SYSTEMS AND COMPONENTS: All programs, files, databases, and external systems involved"""
-
-    @staticmethod
     def build_clarification_questions_prompt(
         process_document: str,
         gap_analysis: str

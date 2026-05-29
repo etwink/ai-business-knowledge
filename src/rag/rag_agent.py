@@ -33,8 +33,10 @@ class RAGAgent:
     """
 
     def __init__(self, knowledge_base: KnowledgeBase, top_k: int = 6):
+        from src.llm_integration import AzureLLMClient
         self.kb = knowledge_base
         self.top_k = top_k
+        self._llm = AzureLLMClient()
         self._history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
 
     # ------------------------------------------------------------------
@@ -50,11 +52,8 @@ class RAGAgent:
             sources (list[dict]) — retrieved chunks with score, source_file, text
             enriched_query (str) — the rewritten query used for vector search
         """
-        from src.llm_integration import AzureLLMClient
-        llm = AzureLLMClient()
-
         # Step 1: Enrich the query before vector search
-        enriched_query = self._enrich_query(user_message, llm)
+        enriched_query = self._enrich_query(user_message)
 
         # Step 2: Retrieve using the enriched query
         chunks = self.kb.search(enriched_query, top_k=self.top_k)
@@ -81,7 +80,7 @@ class RAGAgent:
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
-        answer = llm.query(prompt, system_message=_SYSTEM_PROMPT, max_tokens=3000)
+        answer = self._llm.query(prompt, system_message=_SYSTEM_PROMPT, max_tokens=3000)
 
         # Update history
         self._history.append({"role": "user", "content": user_message})
@@ -96,7 +95,7 @@ class RAGAgent:
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _enrich_query(self, user_message: str, llm) -> str:
+    def _enrich_query(self, user_message: str) -> str:
         """
         Rewrite the raw user question into a richer, domain-specific search query.
 
@@ -115,7 +114,7 @@ class RAGAgent:
             f"implicit intent explicit. If the question is already specific, return it unchanged."
         )
         try:
-            enriched = llm.query(prompt, system_message=_ENRICH_SYSTEM, max_tokens=200)
+            enriched = self._llm.query(prompt, system_message=_ENRICH_SYSTEM, max_tokens=200)
             return enriched.strip() or user_message
         except Exception:
             return user_message
