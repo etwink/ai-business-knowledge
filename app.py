@@ -798,6 +798,37 @@ def render_process_document_page():
             )
 
 
+def _map_gaps_to_clusters(gap_descriptions: list[str], analyses: list) -> dict[str, str]:
+    """Map each gap description to the best-matching cluster/analysis name via word overlap.
+
+    Returns a dict of {gap_description: cluster_name}. Falls back to the first analysis
+    when there is no meaningful overlap (so the caller always gets a name).
+    """
+    import re
+    if not analyses or not gap_descriptions:
+        return {}
+    result: dict[str, str] = {}
+    stopwords = {"the", "a", "an", "is", "are", "was", "were", "or", "and", "of",
+                 "in", "to", "for", "with", "not", "this", "that", "has", "have",
+                 "it", "its", "be", "by", "at", "on", "as", "no", "gaps", "gap",
+                 "missing", "undefined", "incomplete", "each", "identified"}
+    for gap in gap_descriptions:
+        gap_words = set(re.findall(r'\w+', gap.lower())) - stopwords
+        best_name = analyses[0].document_name
+        best_score = -1
+        for a in analyses:
+            candidate = (
+                a.summary + " "
+                + " ".join(a.key_processes)
+                + " " + " ".join(a.systems_mentioned)
+            ).lower()
+            overlap = len(gap_words & (set(re.findall(r'\w+', candidate)) - stopwords))
+            if overlap > best_score:
+                best_score, best_name = overlap, a.document_name
+        result[gap] = best_name
+    return result
+
+
 def render_gap_analysis_page():
     """Render gap analysis page."""
     st.header("⚠️ Gap Analysis")
@@ -826,43 +857,58 @@ def render_gap_analysis_page():
     if st.session_state.gap_analysis:
         gaps = st.session_state.gap_analysis
 
+        # Build gap-to-cluster map once for the whole page
+        all_gap_descriptions = (
+            gaps.missing_steps + gaps.undefined_dependencies
+            + gaps.incomplete_transformations + gaps.missing_integrations
+            + gaps.error_handling_gaps + gaps.security_gaps + gaps.resource_gaps
+        )
+        gap_cluster_map = _map_gaps_to_clusters(
+            all_gap_descriptions, st.session_state.analyses
+        )
+
+        def _gap_item(item: str) -> None:
+            cluster = gap_cluster_map.get(item, "")
+            badge = f" — *{cluster}*" if cluster else ""
+            st.markdown(f"- {item}{badge}")
+
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.subheader("❌ Missing Steps")
             for item in gaps.missing_steps:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         with col2:
             st.subheader("❓ Undefined Dependencies")
             for item in gaps.undefined_dependencies:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         with col3:
             st.subheader("🔄 Incomplete Transformations")
             for item in gaps.incomplete_transformations:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         col1, col2, col3 = st.columns(3)
 
         with col1:
             st.subheader("🔗 Missing Integrations")
             for item in gaps.missing_integrations:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         with col2:
             st.subheader("🚨 Error Handling Gaps")
             for item in gaps.error_handling_gaps:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         with col3:
             st.subheader("🔒 Security Gaps")
             for item in gaps.security_gaps:
-                st.write(f"- {item}")
+                _gap_item(item)
 
         st.subheader("🧑‍💼 Resource Gaps")
         for item in gaps.resource_gaps:
-            st.write(f"- {item}")
+            _gap_item(item)
 
 
 def render_chat_page():
@@ -923,6 +969,12 @@ def render_chat_page():
     if total_gaps > 0:
         st.subheader(f"Gaps  ({resolved_gaps}/{total_gaps} resolved)")
 
+        # Map each gap to its most relevant cluster (word-overlap, no LLM call)
+        gap_cluster_map = _map_gaps_to_clusters(
+            [g.description for g in agent.gap_queue],
+            st.session_state.analyses,
+        )
+
         by_category: dict = defaultdict(list)
         for g in agent.gap_queue:
             by_category[g.category].append(g)
@@ -936,6 +988,7 @@ def render_chat_page():
                 f"{_html.escape(category.replace('_', ' '))}</div>"
             )
             for g in items:
+                cluster = gap_cluster_map.get(g.description, "")
                 if g.resolved:
                     icon = "✅"
                     row_style = "color:#4caf50;border-left:3px solid #4caf50;"
@@ -956,14 +1009,20 @@ def render_chat_page():
                         f"padding:4px 0 2px 8px;margin:3px 0;line-height:1.4'>"
                         f"{icon}&nbsp;{_html.escape(g.description)}</div>"
                     )
+                    # Show cluster tag and source files under unresolved gaps
+                    meta_parts = []
+                    if cluster:
+                        meta_parts.append(f"🏷️ {_html.escape(cluster)}")
                     if g.related_sources:
                         src_names = ", ".join(
                             _html.escape(s['file']) for s in g.related_sources[:3]
                         )
+                        meta_parts.append(f"📎 {src_names}")
+                    if meta_parts:
                         gap_rows.append(
                             f"<div style='font-size:0.72rem;color:#888;"
                             f"padding:0 0 4px 22px;line-height:1.3'>"
-                            f"📎 {src_names}</div>"
+                            f"{'&nbsp;&nbsp;·&nbsp;&nbsp;'.join(meta_parts)}</div>"
                         )
 
         html_content = "\n".join(gap_rows)

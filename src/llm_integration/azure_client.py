@@ -107,19 +107,16 @@ class PromptBuilder:
         return f"""Analyze the following document and respond using EXACTLY these labeled sections:
 
 SUMMARY:
-(2-3 sentence description of the document's purpose and main objectives)
+Write 2-3 sentences describing the document's purpose and main objectives.
 
 KEY PROCESSES:
-- (bullet: each distinct process, workflow, or business step described)
-- ...
+List each distinct process, workflow, or business step described in this document. One dash-prefixed bullet per item.
 
 SYSTEMS MENTIONED:
-- (bullet: each system, application, database, file, or external component named)
-- ...
+List each system, application, database, file, or external component named in this document. One dash-prefixed bullet per item.
 
 TECHNICAL DETAILS:
-- (bullet: each important technical fact, data structure, format, or implementation detail)
-- ...
+List each important technical fact, data structure, format, or implementation detail. One dash-prefixed bullet per item.
 
 Document:
 {document_content[:10000]}"""
@@ -167,32 +164,25 @@ DEPENDENCIES:
         return f"""Analyze the following process document and respond using EXACTLY these labeled sections:
 
 MISSING STEPS:
-- (bullet: each missing or incomplete process step)
-- ...
+List each missing or incomplete process step. One dash-prefixed bullet per item.
 
 UNDEFINED DEPENDENCIES:
-- (bullet: each unexplained technical dependency or reference)
-- ...
+List each unexplained technical dependency or reference. One dash-prefixed bullet per item.
 
 INCOMPLETE TRANSFORMATIONS:
-- (bullet: each undefined or unclear data transformation)
-- ...
+List each undefined or unclear data transformation. One dash-prefixed bullet per item.
 
 MISSING INTEGRATIONS:
-- (bullet: each missing or undocumented system integration)
-- ...
+List each missing or undocumented system integration. One dash-prefixed bullet per item.
 
 ERROR HANDLING GAPS:
-- (bullet: each area where error handling is absent or incomplete)
-- ...
+List each area where error handling is absent or incomplete. One dash-prefixed bullet per item.
 
 SECURITY GAPS:
-- (bullet: each missing security or compliance consideration)
-- ...
+List each missing security or compliance consideration. One dash-prefixed bullet per item.
 
 RESOURCE GAPS:
-- (bullet: each undefined role, team, or resource)
-- ...
+List each undefined role, team, or resource. One dash-prefixed bullet per item.
 
 Process Document:
 {process_document}"""

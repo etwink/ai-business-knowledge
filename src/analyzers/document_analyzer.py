@@ -90,6 +90,9 @@ class DocumentAnalyzer:
                 if stripped and stripped[0].isupper() and stripped.endswith(':'):
                     break
                 item = stripped.lstrip('-•*+ ').strip()
+                # Skip template artifact lines from prompt format
+                if item.startswith('(bullet:') or item in ('...', '….') or item.startswith('[') or item.startswith('List each'):
+                    continue
                 if len(item) > 5:
                     items.append(item)
                     if len(items) >= limit:
@@ -246,6 +249,9 @@ Systems: {process_document.systems_and_components}
 
             if in_section:
                 item = stripped.lstrip('-•*+ ').strip()
+                # Skip template artifact lines from prompt format
+                if item.startswith('(bullet:') or item in ('...', '….') or item.startswith('[') or item.startswith('List each'):
+                    continue
                 if len(item) > 5:
                     items.append(item)
                     if len(items) >= limit:
