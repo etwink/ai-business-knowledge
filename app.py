@@ -20,7 +20,7 @@ from src.analyzers import (
 )
 from src.utils import validate_file
 from src.storage import AnalysisStorage
-from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent, ProcessContext
+from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
 from src.rag import KnowledgeBase, RAGAgent
 import config
 
@@ -53,10 +53,6 @@ def initialize_session():
     # Process context state (set before analysis to guide the LLM)
     if 'process_context' not in st.session_state:
         st.session_state.process_context = None    # ProcessContext | None
-    if 'context_agent' not in st.session_state:
-        st.session_state.context_agent = None
-    if 'context_messages' not in st.session_state:
-        st.session_state.context_messages = []
     # Chat agent state
     if 'chat_agent' not in st.session_state:
         st.session_state.chat_agent = None
@@ -186,12 +182,11 @@ def render_sidebar():
                 ctx_lines.append(f"💬 {preview}{'…' if len(ctx.process_description) > 80 else ''}")
             st.info("\n\n".join(ctx_lines))
         else:
-            st.caption("No process context set — go to **Define Context** to add one.")
+            st.caption("No process context set — go to **Group Documents** to add one.")
 
         page = st.radio(
             "Select a step:",
             [
-                "Define Context",
                 "Group Documents",
                 "Analyze",
                 "Review Process Document",
@@ -304,28 +299,61 @@ def render_group_documents_page():
         st.subheader("Step 2 — Define Context (Optional but Recommended)")
         st.write(
             "Providing context helps the LLM understand the business domain and produce "
-            "more accurate clusters and document sections. You can set a quick description "
-            "here, or visit the **Define Context** page for the full guided experience."
+            "more accurate clusters and document sections. You can reference a specific "
+            "document by name and the system will read it automatically."
         )
         ctx = st.session_state.process_context
         if ctx and ctx.is_set():
             with st.expander("✅ Context is set — click to view or change", expanded=False):
-                st.write(ctx.to_prompt_block())
+                if ctx.foundation_document:
+                    st.write(f"**Foundation document:** {ctx.foundation_document}")
+                if ctx.process_description:
+                    st.write("**Process description:**")
+                    st.write(ctx.process_description)
+                if ctx.additional_notes:
+                    st.write("**Additional notes:**")
+                    st.write(ctx.additional_notes)
                 if st.button("✏️ Clear and re-set context", key="group_clear_ctx"):
                     st.session_state.process_context = None
                     st.rerun()
         else:
             with st.expander("Set context now", expanded=True):
                 quick_ctx = st.text_area(
-                    "Briefly describe what this set of documents is about",
-                    placeholder="e.g. 'Payroll processing system for a mid-size manufacturer — COBOL batch jobs on IBM z/OS'",
-                    height=80,
+                    "Describe the process — optionally reference a document by name as a foundation",
+                    placeholder=(
+                        "e.g. 'Payroll processing system for a mid-size manufacturer on IBM z/OS. "
+                        "Use PAYROLL_OVERVIEW.docx as the foundation document.'"
+                    ),
+                    height=100,
                     key="group_quick_ctx",
                 )
-                if st.button("💾 Save Context", key="group_save_ctx") and quick_ctx.strip():
-                    st.session_state.process_context = ProcessContext(
-                        process_description=quick_ctx.strip()
-                    )
+                if st.button("🔍 Extract Context", key="group_save_ctx") and quick_ctx.strip():
+                    # Build list of Path objects for document detection
+                    if scanned:
+                        available_paths = scanned.cobol + scanned.code + scanned.word + scanned.excel
+                    else:
+                        available_paths = [
+                            f for f in st.session_state.uploaded_files if isinstance(f, Path)
+                        ]
+
+                    ctx_agent = ProcessContextAgent(available_paths)
+
+                    with st.spinner("Pass 1 — Checking for reference document…"):
+                        detected_doc = ctx_agent._identify_reference_doc(quick_ctx.strip())
+
+                    doc_content = ""
+                    if detected_doc:
+                        with st.spinner(f"Reading {detected_doc}…"):
+                            doc_content = ctx_agent._read_doc(detected_doc)
+
+                    with st.spinner("Extracting context…"):
+                        ctx_result = ctx_agent._extract_context(
+                            quick_ctx.strip(), doc_content, detected_doc
+                        )
+
+                    st.session_state.process_context = ctx_result
+                    if detected_doc:
+                        st.info(f"📄 Reference document detected and read: **{detected_doc}**")
                     st.success("Context saved.")
                     st.rerun()
 
@@ -1030,127 +1058,6 @@ def _render_chat_column(agent) -> None:
             st.rerun()
 
 
-def render_context_page():
-    """Let the user identify a foundation document and describe the process before analysis."""
-    st.header("🎯 Define Process Context")
-    st.write(
-        "Before analysis begins, tell the system what this process is about. "
-        "You can identify a key document that should anchor the documentation, "
-        "describe the overall purpose in your own words, or both. "
-        "This context is injected into every LLM call so the output stays focused on the right goal."
-    )
-
-    # ── Gather available document names from whatever has been loaded ──────────
-    available_docs: list[str] = []
-    if st.session_state.bulk_scanned:
-        scanned = st.session_state.bulk_scanned
-        available_docs = (
-            [p.name for p in scanned.cobol]
-            + [p.name for p in scanned.code]
-            + [p.name for p in scanned.word]
-            + [p.name for p in scanned.excel]
-        )
-    elif st.session_state.uploaded_files:
-        available_docs = [
-            getattr(f, "name", str(f)) for f in st.session_state.uploaded_files
-        ]
-
-    # ── Show current context if already set ───────────────────────────────────
-    if st.session_state.process_context and st.session_state.process_context.is_set():
-        ctx = st.session_state.process_context
-        st.success("✅ Process context is set.")
-        with st.expander("Current context (click to view)", expanded=True):
-            if ctx.foundation_document:
-                st.write(f"**Foundation document:** {ctx.foundation_document}")
-            if ctx.process_description:
-                st.write("**Process description:**")
-                st.write(ctx.process_description)
-            if ctx.additional_notes:
-                st.write("**Additional notes:**")
-                st.write(ctx.additional_notes)
-        if st.button("🔄 Reset Context"):
-            st.session_state.process_context = None
-            st.session_state.context_agent = None
-            st.session_state.context_messages = []
-            st.rerun()
-        return
-
-    # ── Initialize agent ──────────────────────────────────────────────────────
-    if st.session_state.context_agent is None:
-        if not available_docs:
-            st.info(
-                "No documents are loaded yet. Go to **Upload Documents** or "
-                "**Bulk Load** first, then come back here to set context."
-            )
-            # Still allow free-text context even without documents
-            available_docs = ["(no files loaded)"]
-
-        with st.spinner("Initializing context agent…"):
-            agent = ProcessContextAgent(available_docs)
-            opening = agent.get_opening_message()
-            st.session_state.context_agent = agent
-            st.session_state.context_messages = [
-                {"role": "assistant", "content": opening}
-            ]
-        st.rerun()
-
-    agent: ProcessContextAgent = st.session_state.context_agent
-
-    # ── Chat history ──────────────────────────────────────────────────────────
-    for msg in st.session_state.context_messages:
-        with st.chat_message(msg["role"]):
-            st.write(msg["content"])
-
-    # ── If agent flagged context ready, show confirm button ───────────────────
-    if agent.context_ready and agent.extracted_context:
-        ctx = agent.extracted_context
-        st.divider()
-        st.subheader("Extracted context — please confirm")
-        col1, col2 = st.columns(2)
-        with col1:
-            if ctx.foundation_document:
-                st.write(f"**Foundation document:** {ctx.foundation_document}")
-            else:
-                st.write("**Foundation document:** *(none specified)*")
-        with col2:
-            if ctx.process_description:
-                st.write("**Process description:**")
-                st.write(ctx.process_description)
-
-        btn_col1, btn_col2 = st.columns(2)
-        with btn_col1:
-            if st.button("✅ Confirm & Save Context", type="primary"):
-                st.session_state.process_context = ctx
-                st.success("Context saved! You can now proceed to Analyze.")
-                st.rerun()
-        with btn_col2:
-            if st.button("✏️ Refine Further"):
-                agent.context_ready = False
-                st.rerun()
-        return
-
-    # ── Confirm button even if agent hasn't flagged ready ────────────────────
-    st.divider()
-    col1, col2 = st.columns([3, 1])
-    with col2:
-        if st.session_state.context_messages and len(st.session_state.context_messages) > 1:
-            if st.button("✅ Done — Extract Context"):
-                with st.spinner("Extracting context from conversation…"):
-                    ctx = agent.force_extract()
-                st.session_state.process_context = ctx
-                st.success("Context saved!")
-                st.rerun()
-
-    # ── Chat input ────────────────────────────────────────────────────────────
-    if user_input := st.chat_input("Describe the process or identify a key document…"):
-        st.session_state.context_messages.append({"role": "user", "content": user_input})
-        with st.spinner("Thinking…"):
-            response, extracted = agent.chat(user_input)
-        st.session_state.context_messages.append({"role": "assistant", "content": response})
-        if extracted:
-            st.session_state.process_context = extracted
-        st.rerun()
-
 
 def _add_content_to_docx(docx, content: str) -> None:
     """Convert LLM markdown-style output into Word paragraphs."""
@@ -1458,8 +1365,6 @@ def main():
     # Main content
     if page == "Group Documents":
         render_group_documents_page()
-    elif page == "Define Context":
-        render_context_page()
     elif page == "Analyze":
         render_analyze_page()
     elif page == "Review Process Document":

@@ -97,8 +97,7 @@ class ConversationalAgent:
         gaps = []
         for category, items in categories:
             for item in items:
-                if not item.lower().startswith("no "):
-                    gaps.append(GapItem(category=category, description=item))
+                gaps.append(GapItem(category=category, description=item))
         return gaps
 
     @property

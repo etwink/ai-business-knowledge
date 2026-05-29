@@ -1,30 +1,34 @@
 """
-ProcessContextAgent — a short chat that establishes the process context before analysis.
+Two-pass process context extraction.
 
-The user identifies a foundation document (the authoritative source) and/or describes
-the overall purpose of the process.  The resulting ProcessContext is injected into every
-downstream synthesis prompt so the LLM builds around the right anchor.
+Pass 1 — Document detection: check whether the user mentioned a specific file
+          from the available set; if so, read its contents.
+Pass 2 — Context extraction: pull a structured ProcessContext out of the user's
+          description and (optionally) the document content.
 """
 
 import json
 import re
-from dataclasses import dataclass, field
+from dataclasses import dataclass
+from pathlib import Path
 from typing import Optional
 
 from src.llm_integration import AzureLLMClient
 
+_MAX_DOC_CHARS = 8_000   # how much of the reference doc to feed into Pass 2
+
 
 @dataclass
 class ProcessContext:
-    foundation_document: Optional[str] = None   # Exact filename from available docs
-    process_description: str = ""               # User-described purpose
-    additional_notes: str = ""                  # Any extra context captured in conversation
+    foundation_document: Optional[str] = None   # Exact filename, if one was identified
+    process_description: str = ""               # Plain-language purpose of the process
+    additional_notes: str = ""                  # Any other useful detail the user provided
 
     def is_set(self) -> bool:
         return bool(self.foundation_document or self.process_description)
 
     def to_prompt_block(self) -> str:
-        """Return a formatted context block ready to inject into any LLM prompt."""
+        """Return a formatted block ready to inject into any downstream LLM prompt."""
         if not self.is_set():
             return ""
         parts = ["[USER-PROVIDED PROCESS CONTEXT — treat this as the highest-priority guide]"]
@@ -45,129 +49,134 @@ class ProcessContext:
         return "\n\n".join(parts)
 
 
-_CONTEXT_SYSTEM_PROMPT = (
-    "You are helping a user set context before their business process documents are analyzed. "
-    "Your only job is to understand: (1) which document, if any, should be treated as the "
-    "foundation or authoritative source, and (2) what the overall business process does and "
-    "why it exists. Ask focused follow-up questions if the user's answer is vague. "
-    "Be concise — this is a short scoping conversation, not a deep dive.\n\n"
-    "When you have gathered enough information to understand the scope, output this marker "
-    "on its own line (the user will NOT see it):\n"
-    "<<CONTEXT_READY>>\n"
-    "Then immediately give a brief 2-3 sentence confirmation of what you understood."
-)
-
-
 class ProcessContextAgent:
-    """Short conversational agent that establishes the process context before analysis."""
+    """
+    Extracts a ProcessContext from a single free-text user description.
 
-    def __init__(self, available_documents: list[str]):
+    Usage
+    -----
+    agent = ProcessContextAgent(available_files)
+    ctx, found_doc = agent.extract_from_input(user_text)
+    # found_doc is the filename that was detected and read (or None)
+    """
+
+    def __init__(self, available_files: list[Path]):
         self.llm = AzureLLMClient()
-        self.available_documents = available_documents
-        self.chat_history: list[dict] = []
-        self.extracted_context: Optional[ProcessContext] = None
-        self.context_ready: bool = False
+        self.available_files = available_files
+        self._file_names: list[str] = [f.name for f in available_files]
 
     # ------------------------------------------------------------------
     # Public API
     # ------------------------------------------------------------------
 
-    def get_opening_message(self) -> str:
-        """Generate the opening question."""
-        doc_list = "\n".join(f"  • {d}" for d in self.available_documents[:40])
-        if len(self.available_documents) > 40:
-            doc_list += f"\n  ... and {len(self.available_documents) - 40} more files"
-
-        prompt = (
-            "You are helping a user set context before their business process documents are analyzed.\n\n"
-            f"Available documents/files:\n{doc_list}\n\n"
-            "Write a concise, friendly opening message (3–5 sentences) that:\n"
-            "1. Explains that before diving into the analysis you want to make sure the "
-            "documentation is built around the right understanding of the process\n"
-            "2. Asks two specific questions:\n"
-            "   a) Is there one document from the list above that should be treated as the "
-            "foundation or authoritative source? (e.g. the main requirements doc, the "
-            "primary specification, or the document that best describes the overall process)\n"
-            "   b) In their own words — what does this process do and why does it exist?\n"
-            "3. Makes clear that either answer alone is helpful — they can answer one or both"
-        )
-        msg = self.llm.query(prompt)
-        self.chat_history.append({"role": "assistant", "content": msg})
-        return msg
-
-    def chat(self, user_message: str) -> tuple[str, Optional[ProcessContext]]:
+    def extract_from_input(
+        self, user_text: str
+    ) -> tuple["ProcessContext", Optional[str]]:
         """
-        Process a user message.
+        Two-pass extraction.
 
-        Returns
-        -------
-        (response_text, extracted_context)
-            extracted_context is non-None only when the agent has flagged <<CONTEXT_READY>>.
+        Returns (ProcessContext, detected_doc_name | None).
+        The caller can use detected_doc_name to show the user which document was read.
         """
-        self.chat_history.append({"role": "user", "content": user_message})
+        # Pass 1: did the user mention a specific document?
+        detected_doc = self._identify_reference_doc(user_text)
 
-        input_messages = [
-            {"role": "system", "content": _CONTEXT_SYSTEM_PROMPT},
-            *self.chat_history,
-        ]
-        raw = self.llm.query_raw(input_messages)
+        # Read the document if one was found
+        doc_content = ""
+        if detected_doc:
+            doc_content = self._read_doc(detected_doc)
 
-        ready = "<<CONTEXT_READY>>" in raw
-        clean = raw.replace("<<CONTEXT_READY>>", "").strip()
-        self.chat_history.append({"role": "assistant", "content": clean})
-
-        extracted: Optional[ProcessContext] = None
-        if ready:
-            self.context_ready = True
-            extracted = self._extract_context()
-            self.extracted_context = extracted
-
-        return clean, extracted
-
-    def force_extract(self) -> ProcessContext:
-        """
-        Extract whatever context has been gathered so far, even without <<CONTEXT_READY>>.
-        Called when the user clicks "Confirm" without the agent having flagged readiness.
-        """
-        ctx = self._extract_context()
-        self.extracted_context = ctx
-        self.context_ready = True
-        return ctx
+        # Pass 2: extract structured context
+        ctx = self._extract_context(user_text, doc_content, detected_doc)
+        return ctx, detected_doc
 
     # ------------------------------------------------------------------
     # Internal helpers
     # ------------------------------------------------------------------
 
-    def _extract_context(self) -> ProcessContext:
-        """Use a structured LLM call to pull out foundation_document and process_description."""
-        history_text = "\n".join(
-            f"{m['role'].upper()}: {m['content']}" for m in self.chat_history
-        )
-        available_json = json.dumps(self.available_documents[:40])
+    def _identify_reference_doc(self, user_text: str) -> Optional[str]:
+        """
+        Pass 1 — ask the LLM whether the user's text refers to a specific file.
+        Returns the exact filename or None.
+        """
+        if not self._file_names:
+            return None
 
+        file_list = json.dumps(self._file_names[:60])
         prompt = (
-            "Read the conversation below and extract the context the user provided.\n\n"
-            f"Conversation:\n{history_text}\n\n"
-            f"Available document filenames: {available_json}\n\n"
-            "Return ONLY valid JSON (no markdown fences, no explanation):\n"
-            '{"foundation_document": "<exact filename from the list if the user named one, otherwise null>", '
-            '"process_description": "<the user\'s description of what the process does and why it exists — '
-            'preserve their wording as much as possible>", '
-            '"additional_notes": "<any other useful context the user mentioned, or empty string>"}'
+            f"The user wrote:\n\"{user_text}\"\n\n"
+            f"Available files:\n{file_list}\n\n"
+            "Does the user's text refer to a specific file from the list above as a "
+            "reference or foundation document? Look for filename mentions, partial names, "
+            "or clear references like 'see X', 'based on X', 'use X as the guide'.\n\n"
+            "Return ONLY valid JSON (no markdown, no explanation):\n"
+            '{"document_name": "<exact filename from the list, or null if none mentioned>"}'
         )
-
-        response = self.llm.query(prompt, max_tokens=800)
         try:
-            clean = re.sub(r"```(?:json)?|```", "", response).strip()
+            raw = self.llm.query(prompt, max_tokens=200)
+            clean = re.sub(r"```(?:json)?|```", "", raw).strip()
+            data = json.loads(clean)
+            name = data.get("document_name")
+            # Validate the name is actually in our list (LLM can hallucinate)
+            if name and any(f.lower() == name.lower() for f in self._file_names):
+                # Return the canonically-cased name from the list
+                return next(f for f in self._file_names if f.lower() == name.lower())
+        except Exception:
+            pass
+        return None
+
+    def _read_doc(self, doc_name: str) -> str:
+        """Read the document content for use in Pass 2."""
+        path = next((f for f in self.available_files if f.name == doc_name), None)
+        if not path:
+            return ""
+        try:
+            from src.document_loaders import get_loader
+            doc = get_loader(path).load()
+            return doc.content[:_MAX_DOC_CHARS]
+        except Exception:
+            try:
+                return path.read_text(encoding="utf-8", errors="ignore")[:_MAX_DOC_CHARS]
+            except Exception:
+                return ""
+
+    def _extract_context(
+        self,
+        user_text: str,
+        doc_content: str,
+        foundation_doc: Optional[str],
+    ) -> "ProcessContext":
+        """
+        Pass 2 — extract structured ProcessContext from the user's text and
+        (optionally) the content of the reference document.
+        """
+        doc_section = (
+            f"\n\nContent of the reference document ({foundation_doc}):\n{doc_content}"
+            if doc_content else ""
+        )
+        prompt = (
+            f"The user provided this description of their business process:\n\"{user_text}\""
+            f"{doc_section}\n\n"
+            "Extract a structured process context. Return ONLY valid JSON:\n"
+            '{\n'
+            '  "process_description": "<2-4 sentence plain-English description of what '
+            'this process does and why it exists — synthesise the user text and document '
+            'content if both are present>",\n'
+            '  "additional_notes": "<any other useful detail: teams, systems, constraints, '
+            'environment — or empty string if nothing else was mentioned>"\n'
+            '}'
+        )
+        try:
+            raw = self.llm.query(prompt, max_tokens=600)
+            clean = re.sub(r"```(?:json)?|```", "", raw).strip()
             data = json.loads(clean)
             return ProcessContext(
-                foundation_document=data.get("foundation_document") or None,
-                process_description=data.get("process_description", ""),
+                foundation_document=foundation_doc,
+                process_description=data.get("process_description", user_text),
                 additional_notes=data.get("additional_notes", ""),
             )
         except Exception:
-            # Fallback: treat the full user conversation as the description
-            user_text = " ".join(
-                m["content"] for m in self.chat_history if m["role"] == "user"
+            return ProcessContext(
+                foundation_document=foundation_doc,
+                process_description=user_text,
             )
-            return ProcessContext(process_description=user_text)
