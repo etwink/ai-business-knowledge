@@ -14,6 +14,7 @@ class GapItem:
     description: str
     resolved: bool = False
     resolution: str = ""
+    related_sources: list[dict] = field(default_factory=list)  # {file, text, score}
 
 
 @dataclass
@@ -68,21 +69,42 @@ class ConversationalAgent:
         analyses: list[AnalysisResult],
         process_document: ProcessDocument,
         gap_analysis: GapAnalysis,
+        knowledge_base=None,
     ):
         self.llm = AzureLLMClient()
         self.analyses = analyses
         self.process_document = process_document
         self.gap_analysis = gap_analysis
+        self.knowledge_base = knowledge_base
         self.chat_history: list[dict] = []
         self.gap_queue: list[GapItem] = self._build_gap_queue()
         # document_name -> list of content versions (v0 = original summary)
         self.document_versions: dict[str, list[str]] = {
             a.document_name: [a.summary] for a in analyses
         }
+        if knowledge_base is not None:
+            self._link_gaps_to_sources()
 
     # ------------------------------------------------------------------
     # Setup
     # ------------------------------------------------------------------
+
+    def _link_gaps_to_sources(self) -> None:
+        """Search the knowledge base for each gap to find the most relevant source passages."""
+        for gap in self.gap_queue:
+            try:
+                results = self.knowledge_base.search(gap.description, top_k=5)
+                seen: set[str] = set()
+                for r in results:
+                    if r['score'] >= 0.25 and r['source_file'] not in seen:
+                        gap.related_sources.append({
+                            'file': r['source_file'],
+                            'text': r['text'][:250],
+                            'score': round(r['score'], 3),
+                        })
+                        seen.add(r['source_file'])
+            except Exception:
+                pass
 
     def _build_gap_queue(self) -> list[GapItem]:
         categories = [
@@ -236,12 +258,16 @@ class ConversationalAgent:
         )
         remaining = self.remaining_gaps
         if remaining:
-            gaps_list = "\n".join(
-                f"  [{i+1}] [{g.category}] {g.description}"
-                for i, g in enumerate(remaining[:20])
-            )
+            gap_lines = []
+            for i, g in enumerate(remaining[:20]):
+                line = f"  [{i+1}] [{g.category}] {g.description}"
+                if g.related_sources:
+                    files = ", ".join(s['file'] for s in g.related_sources[:3])
+                    line += f"\n      → Related sources: {files}"
+                gap_lines.append(line)
             if len(remaining) > 20:
-                gaps_list += f"\n  ... and {len(remaining) - 20} more"
+                gap_lines.append(f"  ... and {len(remaining) - 20} more")
+            gaps_list = "\n".join(gap_lines)
         else:
             gaps_list = "  All gaps have been addressed."
 
@@ -269,12 +295,21 @@ class ConversationalAgent:
         current_content = existing[-1]
         new_version = len(existing) + 1
 
+        source_section = ""
+        if gap.related_sources:
+            excerpts = "\n\n".join(
+                f"From {s['file']} (relevance {int(s['score'] * 100)}%):\n{s['text']}"
+                for s in gap.related_sources[:3]
+            )
+            source_section = f"\n\nRELEVANT SOURCE PASSAGES (from the original documents — use these to ensure accuracy):\n{excerpts}"
+
         prompt = (
             f"Update the following document to incorporate new information provided by a user.\n\n"
             f"DOCUMENT: {target.document_name}\n\n"
             f"CURRENT CONTENT:\n{current_content}\n\n"
             f"GAP THAT WAS ADDRESSED:\n[{gap.category}] {gap.description}\n\n"
-            f"NEW INFORMATION FROM USER:\n{user_answer}\n\n"
+            f"NEW INFORMATION FROM USER:\n{user_answer}"
+            f"{source_section}\n\n"
             f"Instructions:\n"
             f"1. Keep all existing content intact\n"
             f"2. Incorporate the new information naturally in the appropriate section\n"

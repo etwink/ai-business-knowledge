@@ -898,10 +898,20 @@ def render_chat_page():
     # Initialize agent on first visit
     if st.session_state.chat_agent is None:
         with st.spinner("Initializing chat agent..."):
+            # Load knowledge base for gap-to-source linking if it has been built
+            _kb = None
+            _session = st.session_state.current_session
+            if _session:
+                _kb_dir = Path("./analysis_sessions") / _session / "knowledge_base"
+                _kb_candidate = KnowledgeBase(_kb_dir)
+                if _kb_candidate.is_built():
+                    _kb = _kb_candidate
+
             agent = ConversationalAgent(
                 analyses=st.session_state.analyses,
                 process_document=st.session_state.process_document,
                 gap_analysis=st.session_state.gap_analysis,
+                knowledge_base=_kb,
             )
             opening = agent.get_opening_message()
             st.session_state.chat_agent = agent
@@ -937,15 +947,28 @@ def render_chat_page():
                         f" title='{_html.escape(g.resolution[:120])}'"
                         if g.resolution else ""
                     )
+                    gap_rows.append(
+                        f"<div{tip} style='font-size:0.82rem;{row_style}"
+                        f"padding:4px 0 4px 8px;margin:3px 0;line-height:1.4'>"
+                        f"{icon}&nbsp;{_html.escape(g.description)}</div>"
+                    )
                 else:
                     icon = "⬜"
                     row_style = "color:#333;border-left:3px solid #ddd;"
-                    tip = ""
-                gap_rows.append(
-                    f"<div{tip} style='font-size:0.82rem;{row_style}"
-                    f"padding:4px 0 4px 8px;margin:3px 0;line-height:1.4'>"
-                    f"{icon}&nbsp;{_html.escape(g.description)}</div>"
-                )
+                    gap_rows.append(
+                        f"<div style='font-size:0.82rem;{row_style}"
+                        f"padding:4px 0 2px 8px;margin:3px 0;line-height:1.4'>"
+                        f"{icon}&nbsp;{_html.escape(g.description)}</div>"
+                    )
+                    if g.related_sources:
+                        src_names = ", ".join(
+                            _html.escape(s['file']) for s in g.related_sources[:3]
+                        )
+                        gap_rows.append(
+                            f"<div style='font-size:0.72rem;color:#888;"
+                            f"padding:0 0 4px 22px;line-height:1.3'>"
+                            f"📎 {src_names}</div>"
+                        )
 
         html_content = "\n".join(gap_rows)
         st.markdown(
