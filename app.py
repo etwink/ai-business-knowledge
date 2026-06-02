@@ -67,6 +67,11 @@ def initialize_session():
         st.session_state.doc_audience = "new_employee"
     if 'custom_audience_note' not in st.session_state:
         st.session_state.custom_audience_note = ""
+    # Staging keys — hold unsaved selections until the user clicks Save Audience
+    if '_audience_staging' not in st.session_state:
+        st.session_state._audience_staging = st.session_state.doc_audience
+    if '_custom_audience_staging' not in st.session_state:
+        st.session_state._custom_audience_staging = st.session_state.custom_audience_note
 
 
 def _ensure_session() -> str:
@@ -388,22 +393,18 @@ def render_group_documents_page():
                     st.success("Context saved.")
                     st.rerun()
 
-        # Audience selector — always visible so it can be changed independently
+        # Audience selector — stage changes then explicitly save
         st.write("**Document Audience**")
         st.caption("Controls the writing style of all generated documentation and chat responses.")
         audience_options = list(AUDIENCE_LABELS.keys())
-        current_idx = audience_options.index(
-            st.session_state.get("doc_audience", "new_employee")
-        )
         st.selectbox(
             "Who will read the generated documentation?",
             options=audience_options,
             format_func=lambda k: AUDIENCE_LABELS[k],
-            index=current_idx,
-            key="doc_audience",
+            key="_audience_staging",
             label_visibility="collapsed",
         )
-        if st.session_state.doc_audience == "custom":
+        if st.session_state._audience_staging == "custom":
             st.text_area(
                 "Describe your audience",
                 placeholder=(
@@ -411,8 +412,29 @@ def render_group_documents_page():
                     "or 'Call-centre agents who need step-by-step instructions without jargon'"
                 ),
                 height=80,
-                key="custom_audience_note",
+                key="_custom_audience_staging",
             )
+        if st.button("💾 Save Audience"):
+            st.session_state.doc_audience = st.session_state._audience_staging
+            if st.session_state._audience_staging == "custom":
+                st.session_state.custom_audience_note = st.session_state.get("_custom_audience_staging", "")
+            st.rerun()
+        # Show unsaved-changes warning when staging differs from committed value
+        _saved_aud = st.session_state.get("doc_audience", "new_employee")
+        _staged_aud = st.session_state.get("_audience_staging", _saved_aud)
+        _saved_custom = st.session_state.get("custom_audience_note", "")
+        _staged_custom = st.session_state.get("_custom_audience_staging", "")
+        _has_unsaved = _staged_aud != _saved_aud or (
+            _staged_aud == "custom" and _staged_custom != _saved_custom
+        )
+        if _has_unsaved:
+            _saved_label = AUDIENCE_LABELS.get(_saved_aud, "—")
+            if _saved_aud == "custom":
+                _saved_label = (
+                    (_saved_custom[:50] + "…" if len(_saved_custom) > 50 else _saved_custom)
+                    if _saved_custom else "Custom (not described)"
+                )
+            st.caption(f"⚠️ Unsaved changes — currently saved: **{_saved_label}**")
 
     # ── Step 3: Build clusters ────────────────────────────────────────────────
     if files_ready:

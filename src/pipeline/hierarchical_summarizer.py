@@ -79,7 +79,7 @@ class HierarchicalSummarizer:
             cluster_type="cobol",
             summary=synthesis,
             key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
-            systems_mentioned=list(cluster.cobol_program_names)[:10],
+            systems_mentioned=list(cluster.cobol_program_names)[:25],
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
         )
@@ -407,5 +407,5 @@ def _scaled_max_bullets(file_count: int) -> int:
 def _synthesis_word_range(file_count: int) -> tuple[int, int]:
     """Return (lower, upper) word count targets that grow with cluster size."""
     lower = max(400, min(1000, file_count * 25))
-    upper = max(600, min(1500, file_count * 40))
+    upper = max(600, min(2500, file_count * 50))
     return lower, upper
