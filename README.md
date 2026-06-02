@@ -5,7 +5,7 @@ A comprehensive Python application for analyzing collections of documents (COBOL
 ## Features
 
 ### 📚 Document Support
-- **COBOL Files**: `.cob`, `.cbl`, `.cic`, `.cpy`, `.mps`, `.src`
+- **COBOL Files**: `.cob`, `.cbl`, `.cic`, `.cpy`, `.mps`, `.src`, `.ct1`, `.jcv`, `.prv`
 - **Office Documents**: `.docx`, `.xlsx`
 - **Web Content**: `.html`, `.htm`
 - **Code & Text**: `.py`, `.txt`

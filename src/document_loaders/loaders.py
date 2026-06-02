@@ -24,7 +24,7 @@ class TextDocumentLoader(BaseDocumentLoader):
 
 
 class COBOLDocumentLoader(BaseDocumentLoader):
-    """Loader for COBOL source files (.CIC, .CPY, .MPS, .SRC, .COB, .CBL)."""
+    """Loader for COBOL source files (.CIC, .CPY, .MPS, .SRC, .CT1, .JCV, .PRV, .COB, .CBL)."""
 
     def load(self) -> DocumentContent:
         self._validate_file_size()
@@ -368,6 +368,9 @@ def get_loader(file_path: Path) -> BaseDocumentLoader:
         '.cpy': COBOLDocumentLoader,
         '.mps': COBOLDocumentLoader,
         '.src': COBOLDocumentLoader,
+        '.ct1': COBOLDocumentLoader,
+        '.jcv': COBOLDocumentLoader,
+        '.prv': COBOLDocumentLoader,
         # Other source code — all read as plain text
         '.py': TextDocumentLoader,
         '.sql': TextDocumentLoader,

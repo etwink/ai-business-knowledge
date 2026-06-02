@@ -38,6 +38,7 @@ class RAGAgent:
         self.top_k = top_k
         self._llm = AzureLLMClient()
         self._history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
+        self._audience_note = audience_note
         self._system_prompt = (
             _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
             if audience_note else _SYSTEM_PROMPT_BASE
@@ -74,11 +75,23 @@ class RAGAgent:
         # Build history snippet
         history_text = self._format_history()
 
+        audience_instruction = (
+            f"\n\nAUDIENCE: {self._audience_note}\n"
+            f"Tailor your answer specifically for this audience. Focus only on what is "
+            f"directly relevant and actionable for them. If the context contains technical "
+            f"backend details that are outside their scope, either translate them into "
+            f"terms this audience understands or omit them entirely. Frame every step, "
+            f"decision, and explanation from the perspective of what this audience needs "
+            f"to know or do — not how the system is implemented internally."
+            if self._audience_note else ""
+        )
+
         prompt = (
             f"Context excerpts from the knowledge base:\n\n"
             f"{context_block}\n\n"
             f"{'Conversation so far:' + chr(10) + history_text + chr(10) if history_text else ''}"
-            f"User question: {user_message}\n\n"
+            f"User question: {user_message}"
+            f"{audience_instruction}\n\n"
             f"Answer based on the context above. "
             f"Cite source documents by number (e.g. [1], [2]) where relevant. "
             f"If the answer spans multiple sources, integrate them cohesively."
@@ -105,13 +118,23 @@ class RAGAgent:
 
         Uses recent conversation history so follow-up questions get proper context
         (e.g. "what about errors?" → "error handling in the payroll batch process").
+        When an audience is set, biases the query toward terminology and content
+        relevant to that audience so the vector search retrieves the right chunks.
         Falls back to the original message if the LLM call fails.
         """
         history_text = self._format_history()
         history_section = f"Recent conversation:\n{history_text}\n\n" if history_text else ""
+        audience_section = (
+            f"The person asking is: {self._audience_note}\n"
+            f"The enriched query should retrieve content useful and relevant to this audience "
+            f"(e.g. if they are a front-end user, prefer user-facing steps, screens, and "
+            f"workflows over backend technical implementation details).\n\n"
+            if self._audience_note else ""
+        )
 
         prompt = (
             f"{history_section}"
+            f"{audience_section}"
             f"User question: {user_message}\n\n"
             f"Rewrite this into a specific, detailed search query for a business process "
             f"knowledge base. Expand abbreviations, add relevant domain terms, and make "

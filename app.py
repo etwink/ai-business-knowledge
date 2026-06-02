@@ -281,7 +281,7 @@ def render_group_documents_page():
         uploaded = st.file_uploader(
             "Choose files",
             accept_multiple_files=True,
-            type=["txt", "py", "cob", "cbl", "cic", "cpy", "docx", "doc", "xlsx", "xlsm", "xlsb", "html"],
+            type=["txt", "py", "cob", "cbl", "cic", "cpy", "mps", "src", "ct1", "jcv", "prv", "docx", "doc", "xlsx", "xlsm", "xlsb", "html"],
         )
         if uploaded:
             for uf in uploaded:
@@ -442,7 +442,7 @@ def render_group_documents_page():
                         cobol, word, excel, code = [], [], [], []
                         word_exts = {".doc", ".docx"}
                         excel_exts = {".xlsx", ".xlsm", ".xlsb", ".xls"}
-                        cobol_exts = {".cob", ".cbl", ".cic", ".cpy"}
+                        cobol_exts = {".cob", ".cbl", ".cic", ".cpy", ".mps", ".src", ".ct1", ".jcv", ".prv", ".cobol"}
                         for uf in st.session_state.uploaded_files:
                             ext = Path(getattr(uf, "name", str(uf))).suffix.lower()
                             dest = tmp_dir / getattr(uf, "name", str(uf))
@@ -1387,20 +1387,30 @@ def render_knowledge_chat_page() -> None:
                 st.error(f"Failed to build knowledge base: {e}")
         return
 
-    # ── Initialise agent if not already loaded ────────────────────────
-    if st.session_state.rag_agent is None:
-        # Re-index process document on load if available and not yet in the KB
+    # ── Initialise agent (or reinitialise if audience changed) ───────
+    _audience = st.session_state.get("doc_audience", "new_employee")
+    if _audience == "custom":
+        _current_audience_note = (
+            f"IMPORTANT — Audience: {st.session_state.get('custom_audience_note', '').strip()}"
+            if st.session_state.get("custom_audience_note", "").strip() else ""
+        )
+    else:
+        _current_audience_note = AUDIENCE_NOTES.get(_audience, "")
+
+    _existing_agent = st.session_state.rag_agent
+    if _existing_agent is None or getattr(_existing_agent, "_audience_note", None) != _current_audience_note:
         proc_doc = st.session_state.get("process_document")
-        if proc_doc:
+        if _existing_agent is None and proc_doc:
             kb.index_process_document(proc_doc)
-        _audience = st.session_state.get("doc_audience", "new_employee")
-        st.session_state.rag_agent = RAGAgent(
-            kb, audience_note=AUDIENCE_NOTES.get(_audience, "")
-        )
+        st.session_state.rag_agent = RAGAgent(kb, audience_note=_current_audience_note)
+        if _existing_agent is not None:
+            # Preserve conversation history when only the audience changed
+            st.session_state.rag_agent._history = _existing_agent._history
         stats = kb.get_stats()
-        st.success(
-            f"Knowledge base loaded: {stats['chunks']} chunks from {stats['files']} files."
-        )
+        if _existing_agent is None:
+            st.success(
+                f"Knowledge base loaded: {stats['chunks']} chunks from {stats['files']} files."
+            )
 
     agent: RAGAgent = st.session_state.rag_agent
     stats = kb.get_stats()

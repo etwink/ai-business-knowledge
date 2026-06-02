@@ -4,7 +4,7 @@ from pathlib import Path
 from dataclasses import dataclass, field
 
 
-COBOL_EXTENSIONS = {".COB", ".CIC", ".CPY", ".MPS", ".SRC", ".CBL", ".COBOL"}
+COBOL_EXTENSIONS = {".COB", ".CIC", ".CPY", ".MPS", ".SRC", ".CT1", ".JCV", ".PRV", ".CBL", ".COBOL"}
 
 # Non-COBOL source code — analyzed as text, LLM-clustered (no dependency graph)
 CODE_EXTENSIONS = {

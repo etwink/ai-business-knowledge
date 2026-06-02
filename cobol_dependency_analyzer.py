@@ -1,7 +1,7 @@
 """
 COBOL Dependency Analyzer
-Scans COBOL source files (.CIC, .CPY, .MPS, .SRC) and builds a dependency
-graph based on COPY, CALL, and other inter-file references.
+Scans COBOL source files (.CIC, .CPY, .MPS, .SRC, .CT1, .JCV, .PRV) and builds
+a dependency graph based on COPY, CALL, and other inter-file references.
 """
 
 import re
@@ -77,7 +77,7 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ),
 ]
 
-TARGET_EXTENSIONS = {".CIC", ".CPY", ".MPS", ".SRC"}
+TARGET_EXTENSIONS = {".CIC", ".CPY", ".MPS", ".SRC", ".CT1", ".JCV", ".PRV"}
 
 
 # ---------------------------------------------------------------------------

@@ -23,7 +23,7 @@ MAX_DOCUMENT_SIZE_MB = int(os.getenv("MAX_DOCUMENT_SIZE_MB", "50"))
 SUPPORTED_FORMATS = set(
     fmt.strip() for fmt in os.getenv(
         "SUPPORTED_FORMATS",
-        ".py,.cobol,.cbl,.cic,.cpy,.mps,.src,.docx,.html,.xlsx,.xlsm,.xlsb,.txt"
+        ".py,.cobol,.cbl,.cic,.cpy,.mps,.src,.ct1,.jcv,.prv,.docx,.html,.xlsx,.xlsm,.xlsb,.txt"
     ).split(",")
 )
 

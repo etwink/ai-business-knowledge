@@ -62,7 +62,7 @@ If not, manually navigate to that URL.
    - **Sample documents**: Place files in the `sample_documents` folder and use the "Load from Folder" option
 
 Supported formats:
-- COBOL: `.cob`, `.cbl`, `.cic`, `.cpy`, `.mps`, `.src`
+- COBOL: `.cob`, `.cbl`, `.cic`, `.cpy`, `.mps`, `.src`, `.ct1`, `.jcv`, `.prv`
 - Office: `.docx`, `.xlsx`
 - Web: `.html`
 - Other: `.txt`, `.py`
