@@ -20,8 +20,8 @@ from cobol_dependency_analyzer import (
     find_transitive_dependencies,
 )
 
-# Soft trigger: when a cluster reaches this many files, run a token-budget check
-# to determine whether it can actually hold more before splitting.
+# Soft trigger: when a cluster reaches this many files, run a context-window
+# check to determine the true safe limit before splitting.
 _MAX_CLUSTER_FILES = 15
 
 # Never split a cluster below this floor (keeps sub-clusters meaningful).
@@ -30,12 +30,18 @@ _MIN_CLUSTER_FILES = 5
 # Hard ceiling regardless of how small the individual files are.
 _MAX_CLUSTER_FILES_ABSOLUTE = 50
 
-# Total raw-content budget (chars) for one cluster's individual-file summaries.
-# Dividing by average file size gives the dynamic file-count limit.
-_CLUSTER_CONTENT_BUDGET_CHARS = 180_000
+# Total character budget for ONE synthesis LLM call (input side).
+# ~400k chars ≈ 85k tokens — leaves ample room for reasoning + output tokens
+# on a 200k-token context model.
+_CONTEXT_WINDOW_LIMIT_CHARS = 400_000
 
-# Chars read per file when computing the token estimate (mirrors the excerpt
-# size used in _summarize_files_individually).
+# Fixed overhead of the synthesis prompt template (header, instructions, dep
+# info, word-count directive).  Measured from the actual HierarchicalSummarizer
+# synthesis prompts; add a generous buffer for cluster/entry-point names.
+_SYNTHESIS_TEMPLATE_CHARS = 2_000
+
+# Chars read per file when estimating cluster content size (mirrors the
+# excerpt size used in _summarize_files_individually).
 _FILE_EXCERPT_CHARS = 6_000
 
 # Multi-cluster doc assignment: a doc is added to any cluster whose hit count is
@@ -100,7 +106,7 @@ class ClusterBuilder:
           2. Match Word/Excel/code docs to COBOL clusters by program-name mentions.
           3. LLM-cluster the remaining unmatched docs.
         """
-        clusters = self._build_cobol_clusters(cobol_files)
+        clusters = self._build_cobol_clusters(cobol_files, context_block=context_block)
         all_docs = (code_files or []) + word_files + excel_files
         unmatched_docs = self._attach_docs_to_cobol_clusters(clusters, all_docs)
         if unmatched_docs:
@@ -112,7 +118,7 @@ class ClusterBuilder:
     # COBOL clustering via dependency graph
     # ------------------------------------------------------------------
 
-    def _build_cobol_clusters(self, cobol_files: list[Path]) -> list[DocumentCluster]:
+    def _build_cobol_clusters(self, cobol_files: list[Path], context_block: str = "") -> list[DocumentCluster]:
         if not cobol_files:
             return []
 
@@ -186,13 +192,13 @@ class ClusterBuilder:
                 )
             )
 
-        # Split any cluster that is too large to analyse in one LLM call.
-        # Use a content-density check to determine the actual size limit so
-        # small files (copybooks, stubs) can form larger clusters.
+        # Split any cluster that exceeds the soft trigger.  The context-window
+        # check computes how many files actually fit given the synthesis prompt
+        # template overhead + the user-provided context block length.
         result: list[DocumentCluster] = []
         for cl in clusters:
             if cl.file_count > _MAX_CLUSTER_FILES:
-                max_size = _compute_cluster_file_limit(cl.all_files)
+                max_size = _compute_cluster_file_limit(cl.all_files, context_block)
                 result.extend(self._split_large_cluster(cl, graph, path_by_stem, max_size=max_size))
             else:
                 result.append(cl)
@@ -434,21 +440,31 @@ class ClusterBuilder:
 # Helpers
 # ------------------------------------------------------------------
 
-def _compute_cluster_file_limit(files: list[Path]) -> int:
+def _compute_cluster_file_limit(files: list[Path], context_block: str = "") -> int:
     """
-    Sample up to 3 files to estimate average raw content size, then return
-    how many files can fit within _CLUSTER_CONTENT_BUDGET_CHARS.
+    Compute how many files can fit in one synthesis LLM call without overflowing
+    the context window.
 
-    Result is clamped between _MIN_CLUSTER_FILES and _MAX_CLUSTER_FILES_ABSOLUTE
-    so the limit is always meaningful regardless of file density.
+    Budget = _CONTEXT_WINDOW_LIMIT_CHARS
+           - _SYNTHESIS_TEMPLATE_CHARS   (fixed prompt overhead)
+           - len(context_block)           (user-provided context injected into prompt)
+           ÷ avg_file_excerpt_chars       (sampled from the actual files)
+
+    Result is clamped to [_MIN_CLUSTER_FILES, _MAX_CLUSTER_FILES_ABSOLUTE].
     """
-    sample = files[:3]
-    total_chars = 0
-    for p in sample:
-        content = _read_text_excerpt(p, max_chars=_FILE_EXCERPT_CHARS)
-        total_chars += len(content) if content else _FILE_EXCERPT_CHARS
+    template_chars = _SYNTHESIS_TEMPLATE_CHARS + len(context_block)
+    available_chars = _CONTEXT_WINDOW_LIMIT_CHARS - template_chars
+    if available_chars <= 0:
+        return _MIN_CLUSTER_FILES
+
+    # Sample up to 5 files for a better average estimate
+    sample = files[:5]
+    total_chars = sum(
+        len(_read_text_excerpt(p, max_chars=_FILE_EXCERPT_CHARS)) or _FILE_EXCERPT_CHARS
+        for p in sample
+    )
     avg_chars = total_chars // max(len(sample), 1)
-    limit = _CLUSTER_CONTENT_BUDGET_CHARS // max(avg_chars, 100)
+    limit = available_chars // max(avg_chars, 100)
     return max(_MIN_CLUSTER_FILES, min(_MAX_CLUSTER_FILES_ABSOLUTE, limit))
 
 
