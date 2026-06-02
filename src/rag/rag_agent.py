@@ -7,7 +7,7 @@ from __future__ import annotations
 
 from .knowledge_base import KnowledgeBase
 
-_SYSTEM_PROMPT = (
+_SYSTEM_PROMPT_BASE = (
     "You are a knowledgeable assistant helping users understand business processes, "
     "systems, and procedures. Answer questions using ONLY the provided context excerpts. "
     "If the context does not contain enough information to answer fully, say so explicitly "
@@ -32,12 +32,16 @@ class RAGAgent:
     retrieving chunks, then generates a grounded answer.
     """
 
-    def __init__(self, knowledge_base: KnowledgeBase, top_k: int = 6):
+    def __init__(self, knowledge_base: KnowledgeBase, top_k: int = 6, audience_note: str = ""):
         from src.llm_integration import AzureLLMClient
         self.kb = knowledge_base
         self.top_k = top_k
         self._llm = AzureLLMClient()
         self._history: list[dict] = []  # {"role": "user"|"assistant", "content": str}
+        self._system_prompt = (
+            _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
+            if audience_note else _SYSTEM_PROMPT_BASE
+        )
 
     # ------------------------------------------------------------------
     # Public API
@@ -80,7 +84,7 @@ class RAGAgent:
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
-        answer = self._llm.query(prompt, system_message=_SYSTEM_PROMPT, max_tokens=3000)
+        answer = self._llm.query(prompt, system_message=self._system_prompt, max_tokens=3000)
 
         # Update history
         self._history.append({"role": "user", "content": user_message})

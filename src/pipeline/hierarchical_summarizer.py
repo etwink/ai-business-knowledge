@@ -78,7 +78,7 @@ class HierarchicalSummarizer:
             cluster_name=cluster.cluster_name,
             cluster_type="cobol",
             summary=synthesis,
-            key_processes=_extract_bullets(synthesis, max_items=6),
+            key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             systems_mentioned=list(cluster.cobol_program_names)[:10],
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
@@ -97,6 +97,7 @@ class HierarchicalSummarizer:
         )
         context_part = f"\n{context_block}\n" if context_block else ""
         shared_block = self._load_shared_docs_block(cluster)
+        lower, upper = _synthesis_word_range(cluster.file_count)
         prompt = f"""You are analyzing a COBOL subsystem called "{cluster.cluster_name}".
 {f"Entry-point program: {cluster.entry_point}" if cluster.entry_point else "This cluster contains shared utilities and copybooks."}
 {context_part}
@@ -106,7 +107,7 @@ Dependency structure:
 Individual file summaries:
 {summaries_block}{shared_block}
 
-Write a cohesive subsystem summary (400–600 words) covering:
+Write a cohesive subsystem summary ({lower}–{upper} words) covering:
 1. Business purpose of this subsystem
 2. Overall processing flow (entry → processing → output)
 3. Key data structures and copybooks used
@@ -132,7 +133,7 @@ Be specific to the actual code described above."""
             cluster_name=cluster.cluster_name,
             cluster_type="mixed",
             summary=synthesis,
-            key_processes=_extract_bullets(synthesis, max_items=6),
+            key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             systems_mentioned=list(cluster.cobol_program_names)[:10],
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
@@ -180,6 +181,7 @@ Be specific to the actual code described above."""
         )
         context_part = f"\n{context_block}\n" if context_block else ""
         shared_block = self._load_shared_docs_block(cluster)
+        lower, upper = _synthesis_word_range(cluster.file_count)
         prompt = f"""You are analyzing the "{cluster.cluster_name}" business subsystem.
 This cluster combines COBOL source code with associated policy, procedure, and requirements documents.
 {context_part}
@@ -192,7 +194,7 @@ COBOL Code Summaries:
 Business Documentation Summaries:
 {doc_block}{shared_block}
 
-Write a unified subsystem summary (500–700 words) that integrates both the technical implementation and the business intent:
+Write a unified subsystem summary ({lower}–{upper} words) that integrates both the technical implementation and the business intent:
 1. Business purpose and stakeholders
 2. How the COBOL code implements the documented business rules
 3. End-to-end processing flow
@@ -216,7 +218,7 @@ Write a unified subsystem summary (500–700 words) that integrates both the tec
             cluster_name=cluster.cluster_name,
             cluster_type="docs",
             summary=synthesis,
-            key_processes=_extract_bullets(synthesis, max_items=6),
+            key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             file_count=cluster.file_count,
         )
 
@@ -228,8 +230,9 @@ Write a unified subsystem summary (500–700 words) that integrates both the tec
                 combined += f"\n\n=== {path.name} ===\n{doc.content[:4000]}"
         context_part = f"\n{context_block}\n" if context_block else ""
         shared_block = self._load_shared_docs_block(cluster)
+        lower, upper = _synthesis_word_range(len(cluster.doc_files))
         prompt = (
-            f'Summarize the following "{cluster.cluster_name}" documents (400–600 words).\n'
+            f'Summarize the following "{cluster.cluster_name}" documents ({lower}–{upper} words).\n'
             "Cover: business purpose, key processes, data involved, stakeholders, and important rules.\n"
             f"{context_part}{combined}{shared_block}"
         )
@@ -257,8 +260,9 @@ Write a unified subsystem summary (500–700 words) that integrates both the tec
             f"Batch {i+1}:\n{s}" for i, s in enumerate(batch_summaries)
         )
         shared_block = self._load_shared_docs_block(cluster)
+        lower, upper = _synthesis_word_range(len(cluster.doc_files))
         rollup_prompt = (
-            f'Combine the following batch summaries for "{cluster.cluster_name}" into one cohesive summary (400–600 words).\n\n'
+            f'Combine the following batch summaries for "{cluster.cluster_name}" into one cohesive summary ({lower}–{upper} words).\n\n'
             f"{batches_text}{shared_block}"
         )
         return self.llm.query(rollup_prompt, max_tokens=4000)
@@ -393,3 +397,15 @@ def _extract_bullets(text: str, max_items: int = 6) -> list[str]:
         if line.strip() and len(line.strip()) > 15
     ]
     return lines[:max_items]
+
+
+def _scaled_max_bullets(file_count: int) -> int:
+    """Scale bullet extraction limit with cluster size: min 6, max 20."""
+    return max(6, min(20, file_count // 2))
+
+
+def _synthesis_word_range(file_count: int) -> tuple[int, int]:
+    """Return (lower, upper) word count targets that grow with cluster size."""
+    lower = max(400, min(1000, file_count * 25))
+    upper = max(600, min(1500, file_count * 40))
+    return lower, upper

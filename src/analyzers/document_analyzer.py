@@ -190,7 +190,11 @@ class GapAnalyzer:
     def __init__(self):
         self.llm = AzureLLMClient()
 
-    def analyze_gaps(self, process_document: ProcessDocument) -> GapAnalysis:
+    def analyze_gaps(
+        self,
+        process_document: ProcessDocument,
+        context_block: str = "",
+    ) -> GapAnalysis:
         """Analyze process document for gaps and missing information."""
         doc_text = f"""
 Overview: {process_document.overview}
@@ -202,6 +206,8 @@ Systems: {process_document.systems_and_components}
 """
 
         prompt = PromptBuilder.build_gap_analysis_prompt(doc_text)
+        if context_block:
+            prompt = context_block + "\n\n" + prompt
         gap_response = self.llm.query(prompt)
 
         return self._parse_gaps(gap_response)

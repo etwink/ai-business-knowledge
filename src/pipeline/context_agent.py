@@ -17,6 +17,52 @@ from src.llm_integration import AzureLLMClient
 
 _MAX_DOC_CHARS = 8_000   # how much of the reference doc to feed into Pass 2
 
+# Human-readable labels shown in the UI audience selector.
+AUDIENCE_LABELS: dict[str, str] = {
+    "new_employee": "New Employee / No Prior Knowledge",
+    "business":     "Business / Executive",
+    "developer":    "Technical / Developer",
+    "expert":       "Subject Matter Expert",
+}
+
+# Instruction text injected into every LLM prompt so writing style matches
+# the intended reader.  Keyed by the same keys as AUDIENCE_LABELS.
+AUDIENCE_NOTES: dict[str, str] = {
+    "new_employee": (
+        "IMPORTANT — Audience: This document will be read by people who have NO prior "
+        "knowledge of these systems, processes, or business domain. Write as if handing "
+        "this to a new employee on their first day. Never assume the reader already knows "
+        "what a component does or why it exists. Every time you mention a subprocess, "
+        "program, file, system, team, or business concept, briefly explain: (1) what it is, "
+        "(2) what it does, (3) who owns it, and (4) why it exists. Avoid acronyms without "
+        "first spelling them out. Write in plain language."
+    ),
+    "business": (
+        "IMPORTANT — Audience: This document will be read by business executives and "
+        "stakeholders who understand company operations but not technical implementation "
+        "details. Focus on business purpose, outcomes, risks, and decisions. Avoid "
+        "low-level implementation specifics (file formats, code logic, protocols) unless "
+        "directly relevant to a business decision. Use business terminology, not technical "
+        "jargon. When you must mention a technical system, describe only what it does in "
+        "business terms."
+    ),
+    "developer": (
+        "IMPORTANT — Audience: This document will be read by experienced software "
+        "developers and technical architects. Use precise technical terminology freely. "
+        "Focus on implementation details: data structures, interfaces, APIs, file formats, "
+        "processing logic, error handling, and system dependencies. Include specific "
+        "program names, file names, and technical specifications. Skip high-level business "
+        "context unless it directly influences a technical design decision."
+    ),
+    "expert": (
+        "IMPORTANT — Audience: This document will be read by subject matter experts who "
+        "are deeply familiar with the business domain and existing systems. Assume full "
+        "knowledge of all terminology, acronyms, and standard processes. Focus on nuances, "
+        "edge cases, cross-system interactions, and exceptions to standard rules. Skip "
+        "basic definitions and standard process descriptions."
+    ),
+}
+
 
 @dataclass
 class ProcessContext:

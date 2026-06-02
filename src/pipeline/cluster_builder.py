@@ -20,8 +20,23 @@ from cobol_dependency_analyzer import (
     find_transitive_dependencies,
 )
 
-# Clusters larger than this are split into sub-clusters by direct-callee groups.
+# Soft trigger: when a cluster reaches this many files, run a token-budget check
+# to determine whether it can actually hold more before splitting.
 _MAX_CLUSTER_FILES = 15
+
+# Never split a cluster below this floor (keeps sub-clusters meaningful).
+_MIN_CLUSTER_FILES = 5
+
+# Hard ceiling regardless of how small the individual files are.
+_MAX_CLUSTER_FILES_ABSOLUTE = 50
+
+# Total raw-content budget (chars) for one cluster's individual-file summaries.
+# Dividing by average file size gives the dynamic file-count limit.
+_CLUSTER_CONTENT_BUDGET_CHARS = 180_000
+
+# Chars read per file when computing the token estimate (mirrors the excerpt
+# size used in _summarize_files_individually).
+_FILE_EXCERPT_CHARS = 6_000
 
 # Multi-cluster doc assignment: a doc is added to any cluster whose hit count is
 # at least this fraction of the best (highest-scoring) cluster's hit count.
@@ -171,11 +186,14 @@ class ClusterBuilder:
                 )
             )
 
-        # Split any cluster that is too large to analyse in one LLM call
+        # Split any cluster that is too large to analyse in one LLM call.
+        # Use a content-density check to determine the actual size limit so
+        # small files (copybooks, stubs) can form larger clusters.
         result: list[DocumentCluster] = []
         for cl in clusters:
             if cl.file_count > _MAX_CLUSTER_FILES:
-                result.extend(self._split_large_cluster(cl, graph, path_by_stem))
+                max_size = _compute_cluster_file_limit(cl.all_files)
+                result.extend(self._split_large_cluster(cl, graph, path_by_stem, max_size=max_size))
             else:
                 result.append(cl)
         return result
@@ -186,6 +204,7 @@ class ClusterBuilder:
         graph: dict,
         path_by_stem: dict[str, Path],
         _depth: int = 0,
+        max_size: int = _MAX_CLUSTER_FILES,
     ) -> list[DocumentCluster]:
         """
         Recursively split an oversized COBOL cluster into sub-clusters.
@@ -200,7 +219,7 @@ class ClusterBuilder:
 
         Recursion is capped at depth 3 to guarantee termination.
         """
-        if cluster.file_count <= _MAX_CLUSTER_FILES or _depth >= 3:
+        if cluster.file_count <= max_size or _depth >= 3:
             return [cluster]
 
         parent_stems = cluster.cobol_program_names
@@ -228,7 +247,7 @@ class ClusterBuilder:
             # them as independent units so they still get split into chunks.
             if not mini_entries:
                 # Fully disconnected or cyclic — fall back to alphabetical chunks
-                return self._split_into_chunks(cluster, path_by_stem)
+                return self._split_into_chunks(cluster, path_by_stem, max_size=max_size)
             roots = sorted(mini_entries)
 
         # ── Build sub-clusters from roots ─────────────────────────────────────
@@ -272,13 +291,13 @@ class ClusterBuilder:
                 )
 
         if not sub_clusters:
-            return self._split_into_chunks(cluster, path_by_stem)
+            return self._split_into_chunks(cluster, path_by_stem, max_size=max_size)
 
         # Recurse on any sub-cluster that is still too large
         result: list[DocumentCluster] = []
         for sc in sub_clusters:
-            if sc.file_count > _MAX_CLUSTER_FILES:
-                result.extend(self._split_large_cluster(sc, graph, path_by_stem, _depth + 1))
+            if sc.file_count > max_size:
+                result.extend(self._split_large_cluster(sc, graph, path_by_stem, _depth + 1, max_size=max_size))
             else:
                 result.append(sc)
         return result
@@ -287,13 +306,14 @@ class ClusterBuilder:
         self,
         cluster: DocumentCluster,
         path_by_stem: dict[str, Path],
+        max_size: int = _MAX_CLUSTER_FILES,
     ) -> list[DocumentCluster]:
-        """Last-resort: split alphabetically into chunks of _MAX_CLUSTER_FILES."""
+        """Last-resort: split alphabetically into chunks of max_size."""
         files = sorted(cluster.cobol_files, key=lambda p: p.name)
         chunks: list[DocumentCluster] = []
-        for i in range(0, len(files), _MAX_CLUSTER_FILES):
-            batch = files[i : i + _MAX_CLUSTER_FILES]
-            part = i // _MAX_CLUSTER_FILES + 1
+        for i in range(0, len(files), max_size):
+            batch = files[i : i + max_size]
+            part = i // max_size + 1
             stems = {p.stem.upper() for p in batch}
             chunks.append(
                 DocumentCluster(
@@ -413,6 +433,24 @@ class ClusterBuilder:
 # ------------------------------------------------------------------
 # Helpers
 # ------------------------------------------------------------------
+
+def _compute_cluster_file_limit(files: list[Path]) -> int:
+    """
+    Sample up to 3 files to estimate average raw content size, then return
+    how many files can fit within _CLUSTER_CONTENT_BUDGET_CHARS.
+
+    Result is clamped between _MIN_CLUSTER_FILES and _MAX_CLUSTER_FILES_ABSOLUTE
+    so the limit is always meaningful regardless of file density.
+    """
+    sample = files[:3]
+    total_chars = 0
+    for p in sample:
+        content = _read_text_excerpt(p, max_chars=_FILE_EXCERPT_CHARS)
+        total_chars += len(content) if content else _FILE_EXCERPT_CHARS
+    avg_chars = total_chars // max(len(sample), 1)
+    limit = _CLUSTER_CONTENT_BUDGET_CHARS // max(avg_chars, 100)
+    return max(_MIN_CLUSTER_FILES, min(_MAX_CLUSTER_FILES_ABSOLUTE, limit))
+
 
 def _read_text_excerpt(path: Path, max_chars: int = 50_000) -> str:
     """Return a plain-text excerpt from a file (best-effort)."""

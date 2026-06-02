@@ -333,9 +333,12 @@ Process Document:
             )
 
         section_label = section_key.replace("_", " ").upper()
+        # When a context_block is provided it already contains the audience note,
+        # so suppress the hardcoded _AUDIENCE_NOTE to avoid duplication.
+        audience_instruction = cls._AUDIENCE_NOTE if not context_block else ""
         return (
             f"You are writing one section of a business process document.\n"
-            f"{cls._AUDIENCE_NOTE}\n"
+            f"{audience_instruction}\n"
             f"{context_part}\n"
             f"Below are summaries of all subsystems (COBOL programs and business documents).\n\n"
             f"Cluster Summaries:\n{combined}\n\n"
@@ -363,9 +366,10 @@ Process Document:
             )
 
         section_label = section_key.replace("_", " ").upper()
+        audience_instruction = cls._AUDIENCE_NOTE if not context_block else ""
         return (
             f"You are writing one section of a business process document.\n"
-            f"{cls._AUDIENCE_NOTE}\n"
+            f"{audience_instruction}\n"
             f"{context_part}\n"
             f"Below are summaries of the analyzed documents.\n\n"
             f"Document Summaries:\n{combined}\n\n"

@@ -21,6 +21,7 @@ from src.analyzers import (
 from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
+from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES
 from src.rag import KnowledgeBase, RAGAgent
 import config
 
@@ -61,6 +62,9 @@ def initialize_session():
         st.session_state.rag_agent = None
     if 'rag_messages' not in st.session_state:
         st.session_state.rag_messages = []
+    # Audience setting — controls writing style across all LLM outputs
+    if 'doc_audience' not in st.session_state:
+        st.session_state.doc_audience = "new_employee"
 
 
 def _ensure_session() -> str:
@@ -68,6 +72,20 @@ def _ensure_session() -> str:
     if not st.session_state.current_session:
         st.session_state.current_session = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
     return st.session_state.current_session
+
+
+def _get_context_block() -> str:
+    """Return the full context block (audience note + process context) for LLM injection."""
+    audience = st.session_state.get("doc_audience", "new_employee")
+    audience_note = AUDIENCE_NOTES.get(audience, "")
+    ctx_block = (
+        st.session_state.process_context.to_prompt_block()
+        if st.session_state.process_context and st.session_state.process_context.is_set()
+        else ""
+    )
+    if audience_note and ctx_block:
+        return audience_note + "\n\n" + ctx_block
+    return audience_note or ctx_block
 
 
 def render_sidebar():
@@ -167,7 +185,10 @@ def render_sidebar():
 
         st.divider()
         st.subheader("Navigation")
-        # Show context status in sidebar
+        # Show context and audience status in sidebar
+        audience_label = AUDIENCE_LABELS.get(
+            st.session_state.get("doc_audience", "new_employee"), "—"
+        )
         if st.session_state.process_context and st.session_state.process_context.is_set():
             ctx = st.session_state.process_context
             ctx_lines = []
@@ -176,9 +197,11 @@ def render_sidebar():
             if ctx.process_description:
                 preview = ctx.process_description[:80]
                 ctx_lines.append(f"💬 {preview}{'…' if len(ctx.process_description) > 80 else ''}")
+            ctx_lines.append(f"👥 Audience: **{audience_label}**")
             st.info("\n\n".join(ctx_lines))
         else:
             st.caption("No process context set — go to **Group Documents** to add one.")
+            st.caption(f"👥 Audience: **{audience_label}**")
 
         page = st.radio(
             "Select a step:",
@@ -353,6 +376,22 @@ def render_group_documents_page():
                     st.success("Context saved.")
                     st.rerun()
 
+        # Audience selector — always visible so it can be changed independently
+        st.write("**Document Audience**")
+        st.caption("Controls the writing style of all generated documentation and chat responses.")
+        audience_options = list(AUDIENCE_LABELS.keys())
+        current_idx = audience_options.index(
+            st.session_state.get("doc_audience", "new_employee")
+        )
+        st.selectbox(
+            "Who will read the generated documentation?",
+            options=audience_options,
+            format_func=lambda k: AUDIENCE_LABELS[k],
+            index=current_idx,
+            key="doc_audience",
+            label_visibility="collapsed",
+        )
+
     # ── Step 3: Build clusters ────────────────────────────────────────────────
     if files_ready:
         st.divider()
@@ -363,10 +402,7 @@ def render_group_documents_page():
             "using the LLM, informed by the context you defined above."
         )
 
-        ctx_block = (
-            st.session_state.process_context.to_prompt_block()
-            if st.session_state.process_context else ""
-        )
+        ctx_block = _get_context_block()
 
         if st.button("🧩 Build Clusters", disabled=st.session_state.bulk_clusters is not None):
             builder = ClusterBuilder()
@@ -463,10 +499,7 @@ def render_group_documents_page():
                     progress_bar.progress(frac, text=f"Summarizing cluster {idx}/{total}")
                     status_text.write(f"Processing: **{name}**")
 
-                ctx_block = (
-                    st.session_state.process_context.to_prompt_block()
-                    if st.session_state.process_context else ""
-                )
+                ctx_block = _get_context_block()
                 try:
                     summaries = summarizer.summarize_all(
                         clusters,
@@ -523,10 +556,7 @@ def render_group_documents_page():
                 section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
                 section_status.write(f"Generating: **{label}**")
 
-            ctx_block = (
-                st.session_state.process_context.to_prompt_block()
-                if st.session_state.process_context else ""
-            )
+            ctx_block = _get_context_block()
             try:
                 process_doc = builder.build_from_cluster_summaries(
                     st.session_state.bulk_cluster_summaries,
@@ -674,10 +704,7 @@ def render_process_document_page():
             section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
             section_status.write(f"Generating: **{label}**")
 
-        ctx_block = (
-            st.session_state.process_context.to_prompt_block()
-            if st.session_state.process_context else ""
-        )
+        ctx_block = _get_context_block()
         try:
             st.session_state.process_document = builder.build_process_document(
                 st.session_state.analyses,
@@ -841,7 +868,8 @@ def render_gap_analysis_page():
         with st.spinner("Analyzing gaps and missing information..."):
             gap_analyzer = GapAnalyzer()
             st.session_state.gap_analysis = gap_analyzer.analyze_gaps(
-                st.session_state.process_document
+                st.session_state.process_document,
+                context_block=_get_context_block(),
             )
             
             try:
@@ -949,11 +977,13 @@ def render_chat_page():
                 if _kb_candidate.is_built():
                     _kb = _kb_candidate
 
+            _audience = st.session_state.get("doc_audience", "new_employee")
             agent = ConversationalAgent(
                 analyses=st.session_state.analyses,
                 process_document=st.session_state.process_document,
                 gap_analysis=st.session_state.gap_analysis,
                 knowledge_base=_kb,
+                audience_note=AUDIENCE_NOTES.get(_audience, ""),
             )
             opening = agent.get_opening_message()
             st.session_state.chat_agent = agent
@@ -1325,7 +1355,10 @@ def render_knowledge_chat_page() -> None:
                     f"Knowledge base built: {n_chunks} chunks from {len(all_files)} files{extra_msg}."
                 )
                 # Initialise agent immediately
-                st.session_state.rag_agent = RAGAgent(kb)
+                _audience = st.session_state.get("doc_audience", "new_employee")
+                st.session_state.rag_agent = RAGAgent(
+                    kb, audience_note=AUDIENCE_NOTES.get(_audience, "")
+                )
                 st.session_state.rag_messages = []
                 st.rerun()
             except Exception as e:
@@ -1338,7 +1371,10 @@ def render_knowledge_chat_page() -> None:
         proc_doc = st.session_state.get("process_document")
         if proc_doc:
             kb.index_process_document(proc_doc)
-        st.session_state.rag_agent = RAGAgent(kb)
+        _audience = st.session_state.get("doc_audience", "new_employee")
+        st.session_state.rag_agent = RAGAgent(
+            kb, audience_note=AUDIENCE_NOTES.get(_audience, "")
+        )
         stats = kb.get_stats()
         st.success(
             f"Knowledge base loaded: {stats['chunks']} chunks from {stats['files']} files."

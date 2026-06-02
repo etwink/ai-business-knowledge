@@ -33,9 +33,8 @@ class AgentResponse:
     is_complete: bool = False
 
 
-_SYSTEM_PROMPT = """You are a senior business analyst conducting a knowledge-capture interview. \
-Your goal is to help the user document their business processes as completely as possible — \
-for a reader who has NO prior knowledge of the systems or business domain.
+_SYSTEM_PROMPT_BASE = """You are a senior business analyst conducting a knowledge-capture interview. \
+Your goal is to help the user document their business processes as completely as possible.
 
 Each turn you will receive a [CONTEXT] block (not visible to the user) listing the open gaps \
 in the current documentation. These gaps are your guide, not a rigid script.
@@ -70,12 +69,18 @@ class ConversationalAgent:
         process_document: ProcessDocument,
         gap_analysis: GapAnalysis,
         knowledge_base=None,
+        audience_note: str = "",
     ):
         self.llm = AzureLLMClient()
         self.analyses = analyses
         self.process_document = process_document
         self.gap_analysis = gap_analysis
         self.knowledge_base = knowledge_base
+        self._audience_note = audience_note
+        self._system_prompt = (
+            _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
+            if audience_note else _SYSTEM_PROMPT_BASE
+        )
         self.chat_history: list[dict] = []
         self.gap_queue: list[GapItem] = self._build_gap_queue()
         # document_name -> list of content versions (v0 = original summary)
@@ -154,19 +159,25 @@ class ConversationalAgent:
             for cat, items in gap_categories.items()
         )
 
+        audience_line = (
+            f"Target audience for the documentation: {self._audience_note}\n"
+            if self._audience_note else
+            "Target audience: a reader with NO prior knowledge of these systems.\n"
+        )
         prompt = (
             f"You are a senior business analyst beginning a knowledge-capture interview.\n\n"
             f"Documents analyzed: {doc_names}\n"
             f"Total documentation gaps identified: {total}\n"
-            f"Gap areas:\n{gap_summary}\n\n"
+            f"Gap areas:\n{gap_summary}\n"
+            f"{audience_line}\n"
             f"Write a warm, professional opening message that:\n"
             f"1. Briefly explains you've analyzed their documents and identified areas that need "
-            f"more detail to make the documentation useful for someone with no prior knowledge\n"
+            f"more detail to make the documentation useful for the target audience\n"
             f"2. Presents the gaps as 'areas we want to understand better' — NOT as a rigid list "
             f"of questions to answer in sequence\n"
             f"3. Invites the user to start by describing the process in their own words — "
             f"who is involved, what triggers it, what it achieves, and any important details "
-            f"they think a new person would need to know\n"
+            f"a reader would need to know\n"
             f"4. Makes clear that the more context they share, the better — this is an open "
             f"conversation, not a form\n\n"
             f"Keep the opening to 4-6 sentences. End with an open-ended invitation to share."
@@ -187,7 +198,7 @@ class ConversationalAgent:
         )
 
         input_messages = [
-            {"role": "system", "content": _SYSTEM_PROMPT},
+            {"role": "system", "content": self._system_prompt},
             # Inject context as a user turn so the model sees it, then confirm receipt
             {"role": "user", "content": context},
             {"role": "assistant", "content": "Understood. I'll work through the gaps now."},
