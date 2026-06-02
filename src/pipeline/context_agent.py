@@ -23,6 +23,7 @@ AUDIENCE_LABELS: dict[str, str] = {
     "business":     "Business / Executive",
     "developer":    "Technical / Developer",
     "expert":       "Subject Matter Expert",
+    "custom":       "Other (describe below)",
 }
 
 # Instruction text injected into every LLM prompt so writing style matches

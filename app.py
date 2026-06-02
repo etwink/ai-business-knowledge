@@ -65,6 +65,8 @@ def initialize_session():
     # Audience setting — controls writing style across all LLM outputs
     if 'doc_audience' not in st.session_state:
         st.session_state.doc_audience = "new_employee"
+    if 'custom_audience_note' not in st.session_state:
+        st.session_state.custom_audience_note = ""
 
 
 def _ensure_session() -> str:
@@ -77,7 +79,14 @@ def _ensure_session() -> str:
 def _get_context_block() -> str:
     """Return the full context block (audience note + process context) for LLM injection."""
     audience = st.session_state.get("doc_audience", "new_employee")
-    audience_note = AUDIENCE_NOTES.get(audience, "")
+    if audience == "custom":
+        custom_text = st.session_state.get("custom_audience_note", "").strip()
+        audience_note = (
+            f"IMPORTANT — Audience: {custom_text}"
+            if custom_text else ""
+        )
+    else:
+        audience_note = AUDIENCE_NOTES.get(audience, "")
     ctx_block = (
         st.session_state.process_context.to_prompt_block()
         if st.session_state.process_context and st.session_state.process_context.is_set()
@@ -186,9 +195,12 @@ def render_sidebar():
         st.divider()
         st.subheader("Navigation")
         # Show context and audience status in sidebar
-        audience_label = AUDIENCE_LABELS.get(
-            st.session_state.get("doc_audience", "new_employee"), "—"
-        )
+        _aud_key = st.session_state.get("doc_audience", "new_employee")
+        if _aud_key == "custom":
+            _custom = st.session_state.get("custom_audience_note", "").strip()
+            audience_label = _custom[:60] + ("…" if len(_custom) > 60 else "") if _custom else "Custom (not yet described)"
+        else:
+            audience_label = AUDIENCE_LABELS.get(_aud_key, "—")
         if st.session_state.process_context and st.session_state.process_context.is_set():
             ctx = st.session_state.process_context
             ctx_lines = []
@@ -391,6 +403,16 @@ def render_group_documents_page():
             key="doc_audience",
             label_visibility="collapsed",
         )
+        if st.session_state.doc_audience == "custom":
+            st.text_area(
+                "Describe your audience",
+                placeholder=(
+                    "e.g. 'External auditors with accounting knowledge but no IT background' "
+                    "or 'Call-centre agents who need step-by-step instructions without jargon'"
+                ),
+                height=80,
+                key="custom_audience_note",
+            )
 
     # ── Step 3: Build clusters ────────────────────────────────────────────────
     if files_ready:
