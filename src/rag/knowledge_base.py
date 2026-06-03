@@ -178,6 +178,73 @@ class KnowledgeBase:
             for i in top_indices
         ]
 
+    def search_tiered(
+        self,
+        query: str,
+        process_doc_k: int = 3,
+        word_k: int = 3,
+        code_k: int = 2,
+        exclude_ids: set[int] | None = None,
+        include_code: bool = True,
+    ) -> dict[str, list[dict]]:
+        """
+        Pull top-k chunks separately from each tier, respecting per-query exclusions.
+
+        Returns {"process_doc": [...], "word": [...], "code": [...]}.
+        Each chunk dict includes "_array_idx" (position in the internal chunk array)
+        so callers can track which chunks to exclude in subsequent calls.
+
+        Tier mapping:
+          tier 2 → process_doc   (generated process document sections)
+          tier 1 → word          (.doc / .docx business documents)
+          tier 3 → code          (everything else: COBOL, Python, Excel, etc.)
+        """
+        self._ensure_loaded()
+        if self._embeddings is None or not self._chunks:
+            return {"process_doc": [], "word": [], "code": []}
+
+        model = _get_model()
+        q_emb = model.encode([query], normalize_embeddings=True)[0].astype(np.float32)
+        raw_scores: np.ndarray = self._embeddings @ q_emb
+
+        excluded = exclude_ids or set()
+
+        tier_indices: dict[str, list[int]] = {"process_doc": [], "word": [], "code": []}
+        for i, chunk in enumerate(self._chunks):
+            if i in excluded:
+                continue
+            if chunk.tier == 2:
+                tier_indices["process_doc"].append(i)
+            elif chunk.tier == 1:
+                tier_indices["word"].append(i)
+            else:
+                tier_indices["code"].append(i)
+
+        limits = {
+            "process_doc": process_doc_k,
+            "word": word_k,
+            "code": code_k if include_code else 0,
+        }
+
+        results: dict[str, list[dict]] = {"process_doc": [], "word": [], "code": []}
+        for group, indices in tier_indices.items():
+            k = limits[group]
+            if k == 0 or not indices:
+                continue
+            idx_arr = np.array(indices)
+            group_scores = raw_scores[idx_arr]
+            top_n = min(k, len(idx_arr))
+            top_local = np.argsort(group_scores)[::-1][:top_n]
+            for li in top_local:
+                gi = int(idx_arr[li])
+                results[group].append({
+                    **asdict(self._chunks[gi]),
+                    "score": float(raw_scores[gi]),
+                    "_array_idx": gi,
+                })
+
+        return results
+
     def get_stats(self) -> dict:
         self._ensure_loaded()
         unique_files = {c.source_file for c in self._chunks}
