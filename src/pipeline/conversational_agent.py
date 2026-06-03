@@ -112,19 +112,16 @@ class ConversationalAgent:
                 pass
 
     def _build_gap_queue(self) -> list[GapItem]:
-        categories = [
-            ("missing_steps", self.gap_analysis.missing_steps),
-            ("undefined_dependencies", self.gap_analysis.undefined_dependencies),
-            ("incomplete_transformations", self.gap_analysis.incomplete_transformations),
-            ("missing_integrations", self.gap_analysis.missing_integrations),
-            ("error_handling_gaps", self.gap_analysis.error_handling_gaps),
-            ("security_gaps", self.gap_analysis.security_gaps),
-            ("resource_gaps", self.gap_analysis.resource_gaps),
-        ]
         gaps = []
-        for category, items in categories:
+        # Dynamic audience-specific categories
+        for category, items in self.gap_analysis.gaps_by_category.items():
             for item in items:
                 gaps.append(GapItem(category=category, description=item))
+        # Always-present sections
+        for item in self.gap_analysis.edge_cases:
+            gaps.append(GapItem(category="edge_cases", description=item))
+        for item in self.gap_analysis.resource_gaps:
+            gaps.append(GapItem(category="resource_gaps", description=item))
         return gaps
 
     @property

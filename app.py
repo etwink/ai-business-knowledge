@@ -164,15 +164,36 @@ def render_sidebar():
                     
                     if 'gap_analysis' in session_data:
                         gaps = session_data['gap_analysis']
-                        st.session_state.gap_analysis = GapAnalysis(
-                            missing_steps=gaps.get('missing_steps', []),
-                            undefined_dependencies=gaps.get('undefined_dependencies', []),
-                            incomplete_transformations=gaps.get('incomplete_transformations', []),
-                            missing_integrations=gaps.get('missing_integrations', []),
-                            error_handling_gaps=gaps.get('error_handling_gaps', []),
-                            security_gaps=gaps.get('security_gaps', []),
-                            resource_gaps=gaps.get('resource_gaps', [])
-                        )
+                        if gaps.get('format') == 'v2':
+                            st.session_state.gap_analysis = GapAnalysis(
+                                gaps_by_category=gaps.get('gaps_by_category', {}),
+                                edge_cases=gaps.get('edge_cases', []),
+                                resource_gaps=gaps.get('resource_gaps', []),
+                                ranked_gaps=gaps.get('ranked_gaps', []),
+                            )
+                        else:
+                            # Migrate old format: map fixed fields → gaps_by_category
+                            old_cats = {}
+                            _old_map = [
+                                ('missing_steps', 'Missing Steps'),
+                                ('undefined_dependencies', 'Undefined Dependencies'),
+                                ('incomplete_transformations', 'Incomplete Transformations'),
+                                ('missing_integrations', 'Missing Integrations'),
+                                ('error_handling_gaps', 'Error Handling Gaps'),
+                                ('security_gaps', 'Security Gaps'),
+                            ]
+                            for field_name, cat_label in _old_map:
+                                vals = [v for v in gaps.get(field_name, [])
+                                        if v and not v.startswith("No ")]
+                                if vals:
+                                    old_cats[cat_label] = vals
+                            st.session_state.gap_analysis = GapAnalysis(
+                                gaps_by_category=old_cats,
+                                edge_cases=[],
+                                resource_gaps=[v for v in gaps.get('resource_gaps', [])
+                                              if v and not v.startswith("No ")],
+                                ranked_gaps=[],
+                            )
                     
                     if 'chat_messages' in session_data:
                         st.session_state.chat_messages = session_data['chat_messages']
@@ -909,13 +930,28 @@ def render_gap_analysis_page():
         return
 
     if st.button("Analyze Gaps", type="primary"):
-        with st.spinner("Analyzing gaps and missing information..."):
+        with st.spinner("Analyzing gaps (pass 1 — identifying gaps)…"):
             gap_analyzer = GapAnalyzer()
+            _audience = st.session_state.get("doc_audience", "new_employee")
+            _audience_note = (
+                st.session_state.get("custom_audience_note", "")
+                if _audience == "custom" else ""
+            )
+            # Collect edge case hints from cluster summaries (if available)
+            _cluster_edge_cases = []
+            if st.session_state.bulk_cluster_summaries:
+                for _cs in st.session_state.bulk_cluster_summaries:
+                    if hasattr(_cs, "edge_cases"):
+                        _cluster_edge_cases.extend(_cs.edge_cases)
+
             st.session_state.gap_analysis = gap_analyzer.analyze_gaps(
                 st.session_state.process_document,
                 context_block=_get_context_block(),
+                audience_key=_audience,
+                audience_note=_audience_note,
+                cluster_edge_cases=_cluster_edge_cases or None,
             )
-            
+
             try:
                 st.session_state.storage.save_gap_analysis(
                     _ensure_session(),
@@ -929,58 +965,83 @@ def render_gap_analysis_page():
     if st.session_state.gap_analysis:
         gaps = st.session_state.gap_analysis
 
-        # Build gap-to-cluster map once for the whole page
-        all_gap_descriptions = (
-            gaps.missing_steps + gaps.undefined_dependencies
-            + gaps.incomplete_transformations + gaps.missing_integrations
-            + gaps.error_handling_gaps + gaps.security_gaps + gaps.resource_gaps
+        # Collect all gap descriptions for the cluster-map helper
+        _all_descs = (
+            [d for items in gaps.gaps_by_category.values() for d in items]
+            + gaps.edge_cases
+            + gaps.resource_gaps
         )
-        gap_cluster_map = _map_gaps_to_clusters(
-            all_gap_descriptions, st.session_state.analyses
-        )
+        gap_cluster_map = _map_gaps_to_clusters(_all_descs, st.session_state.analyses)
 
         def _gap_item(item: str) -> None:
             cluster = gap_cluster_map.get(item, "")
             badge = f" — *{cluster}*" if cluster else ""
             st.markdown(f"- {item}{badge}")
 
-        col1, col2, col3 = st.columns(3)
+        def _importance_badge(score: int) -> str:
+            if score >= 8:
+                return f"🔴 **{score}/10** Critical"
+            elif score >= 6:
+                return f"🟠 **{score}/10** High"
+            elif score >= 4:
+                return f"🟡 **{score}/10** Medium"
+            else:
+                return f"🟢 **{score}/10** Low"
 
-        with col1:
-            st.subheader("❌ Missing Steps")
-            for item in gaps.missing_steps:
-                _gap_item(item)
+        tab_ranked, tab_categories, tab_edge, tab_resource = st.tabs([
+            "🏆 Ranked by Importance",
+            "📋 By Category",
+            "⚡ Edge Cases",
+            "🧑‍💼 Resource Gaps",
+        ])
 
-        with col2:
-            st.subheader("❓ Undefined Dependencies")
-            for item in gaps.undefined_dependencies:
-                _gap_item(item)
+        with tab_ranked:
+            if gaps.ranked_gaps:
+                st.caption(
+                    f"{len(gaps.ranked_gaps)} gaps ranked by business importance — "
+                    "🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low"
+                )
+                for g in gaps.ranked_gaps:
+                    score = g.get("importance", 5)
+                    cat = g.get("category", "")
+                    desc = g.get("description", "")
+                    cluster = gap_cluster_map.get(desc, "")
+                    badge = f" — *{cluster}*" if cluster else ""
+                    st.markdown(
+                        f"{_importance_badge(score)} &nbsp; `{cat}` — {desc}{badge}",
+                        unsafe_allow_html=True,
+                    )
+            else:
+                st.info("Run gap analysis to see ranked results.")
 
-        with col3:
-            st.subheader("🔄 Incomplete Transformations")
-            for item in gaps.incomplete_transformations:
-                _gap_item(item)
+        with tab_categories:
+            if gaps.gaps_by_category:
+                categories = list(gaps.gaps_by_category.items())
+                n_cols = min(3, len(categories))
+                cols = st.columns(n_cols)
+                for i, (cat, items) in enumerate(categories):
+                    with cols[i % n_cols]:
+                        st.subheader(cat)
+                        for item in items:
+                            _gap_item(item)
+            else:
+                st.info("No audience-specific gaps identified.")
 
-        col1, col2, col3 = st.columns(3)
+        with tab_edge:
+            if gaps.edge_cases:
+                st.caption(f"{len(gaps.edge_cases)} edge cases identified")
+                for item in gaps.edge_cases:
+                    _gap_item(item)
+            else:
+                st.info("No edge cases identified.")
 
-        with col1:
-            st.subheader("🔗 Missing Integrations")
-            for item in gaps.missing_integrations:
-                _gap_item(item)
-
-        with col2:
-            st.subheader("🚨 Error Handling Gaps")
-            for item in gaps.error_handling_gaps:
-                _gap_item(item)
-
-        with col3:
-            st.subheader("🔒 Security Gaps")
-            for item in gaps.security_gaps:
-                _gap_item(item)
-
-        st.subheader("🧑‍💼 Resource Gaps")
-        for item in gaps.resource_gaps:
-            _gap_item(item)
+        with tab_resource:
+            if gaps.resource_gaps:
+                st.caption(f"{len(gaps.resource_gaps)} resource gaps identified")
+                for item in gaps.resource_gaps:
+                    _gap_item(item)
+            else:
+                st.info("No resource gaps identified.")
 
 
 def render_chat_page():

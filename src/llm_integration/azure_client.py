@@ -158,31 +158,135 @@ DEPENDENCIES:
 ### Inter-subsystem dependencies and common call chains
 * (bullet points describing dependencies)"""
 
+    # Audience-specific gap analysis category definitions.
+    # Each entry maps to the intended reader and the categories most relevant to them.
+    _AUDIENCE_GAP_CONFIGS: dict = {
+        "new_employee": {
+            "audience_desc": "a new employee with no prior knowledge of these systems or business domain",
+            "categories": [
+                ("Missing Process Steps",
+                 "Steps that are absent, incomplete, out of order, or have unclear triggers or outcomes"),
+                ("Unclear Terminology",
+                 "Acronyms, system names, or jargon used without explanation that a newcomer would not know"),
+                ("Missing Prerequisites",
+                 "Knowledge, system access, approvals, or tools needed before starting that are never mentioned"),
+                ("Incomplete Workflows",
+                 "Workflows or hand-offs that lack a clear start, end, decision point, or responsible person"),
+            ],
+        },
+        "business": {
+            "audience_desc": "a business executive or manager focused on outcomes and organizational effectiveness",
+            "categories": [
+                ("Process Inefficiencies",
+                 "Bottlenecks, redundant steps, or manual activities that could be automated or streamlined"),
+                ("Missing Performance Metrics",
+                 "Absent KPIs, SLAs, throughput targets, or success criteria that management needs to track health"),
+                ("Compliance and Audit Gaps",
+                 "Regulatory requirements, audit trails, approval controls, or reporting obligations not addressed"),
+                ("Stakeholder and Ownership Gaps",
+                 "Decisions, outputs, or processes with no clearly assigned owner, team, or accountable party"),
+            ],
+        },
+        "developer": {
+            "audience_desc": "a software developer or engineer responsible for implementation or maintenance",
+            "categories": [
+                ("Undefined Technical Dependencies",
+                 "Libraries, services, APIs, environment variables, or external systems referenced but undocumented"),
+                ("Error Handling Gaps",
+                 "Missing exception handling, retry logic, rollback procedures, or documented failure recovery paths"),
+                ("Security Vulnerabilities",
+                 "Authentication, authorization, input validation, encryption, or sensitive data exposure concerns"),
+                ("Missing System Integrations",
+                 "Undocumented or incompletely specified interfaces with external systems or services"),
+                ("Data Transformation Gaps",
+                 "Unclear data mappings, type conversions, validation rules, or business logic encodings"),
+            ],
+        },
+        "expert": {
+            "audience_desc": "a subject matter expert with deep domain and technical knowledge",
+            "categories": [
+                ("Technical Specification Gaps",
+                 "Insufficient precision for implementation, testing, or audit — missing formats, constraints, or limits"),
+                ("Data Flow Gaps",
+                 "Incomplete data lineage, missing volume/frequency information, or untraced transformation logic"),
+                ("Cross-System Integration Gaps",
+                 "Incomplete interface specifications, message formats, sequencing rules, or inter-system error protocols"),
+                ("Business Rule Exceptions",
+                 "Special cases, override conditions, seasonal variations, or edge policies absent from the main flow"),
+                ("Performance and Scalability Gaps",
+                 "No guidance on throughput limits, peak load handling, concurrency rules, or scaling thresholds"),
+            ],
+        },
+    }
+
     @staticmethod
-    def build_gap_analysis_prompt(process_document: str) -> str:
-        """Build prompt for identifying gaps and missing information."""
-        return f"""Analyze the following process document and respond using EXACTLY these labeled sections:
+    def build_gap_analysis_prompt(
+        process_document: str,
+        audience_key: str = "new_employee",
+        audience_note: str = "",
+        cluster_edge_cases: list | None = None,
+    ) -> str:
+        """
+        Build an audience-specific gap analysis prompt that returns JSON.
 
-MISSING STEPS:
-List each missing or incomplete process step. One dash-prefixed bullet per item.
+        The prompt finds dynamic numbers of gaps (not a fixed count),
+        always includes edge_cases and resource_gaps sections, and
+        optionally seeds edge case discovery with hints from cluster analysis.
+        """
+        cfg = PromptBuilder._AUDIENCE_GAP_CONFIGS.get(audience_key)
 
-UNDEFINED DEPENDENCIES:
-List each unexplained technical dependency or reference. One dash-prefixed bullet per item.
+        if cfg:
+            audience_desc = cfg["audience_desc"]
+            categories_block = "\n".join(
+                f'- "{name}": {desc}'
+                for name, desc in cfg["categories"]
+            )
+        else:  # custom audience
+            audience_desc = audience_note or "the specified audience"
+            categories_block = (
+                '- "Process Gaps": Missing, incomplete, or unclear process steps and workflows\n'
+                '- "Technical Gaps": Undefined dependencies, integrations, or technical specifications\n'
+                '- "Data Gaps": Unclear data flows, transformations, or ownership\n'
+                '- "Compliance Gaps": Regulatory, audit, or policy requirements not addressed\n'
+                '- "Documentation Gaps": Missing context, terminology, or stakeholder information'
+            )
 
-INCOMPLETE TRANSFORMATIONS:
-List each undefined or unclear data transformation. One dash-prefixed bullet per item.
+        edge_hint = ""
+        if cluster_edge_cases:
+            hint_lines = "\n".join(f"- {ec}" for ec in cluster_edge_cases[:15])
+            edge_hint = (
+                "\n\nEdge cases already identified during document-cluster analysis "
+                "(verify, refine, and expand on these in your edge_cases output):\n"
+                + hint_lines
+            )
 
-MISSING INTEGRATIONS:
-List each missing or undocumented system integration. One dash-prefixed bullet per item.
+        return f"""You are performing a gap analysis on a process document for a specific audience.
 
-ERROR HANDLING GAPS:
-List each area where error handling is absent or incomplete. One dash-prefixed bullet per item.
+Target audience: {audience_desc}
+Focus your analysis on what this audience would need but finds missing or unclear.
 
-SECURITY GAPS:
-List each missing security or compliance consideration. One dash-prefixed bullet per item.
+Return a JSON object with this exact structure:
+{{
+  "gaps": [
+    {{"category": "Category Name", "description": "Specific, concrete gap — name the step/system/doc affected"}}
+  ],
+  "edge_cases": [
+    "Specific boundary condition, unusual input, failure scenario, or unaddressed exception path"
+  ],
+  "resource_gaps": [
+    "Specific missing role, unassigned ownership, or undefined team responsibility"
+  ]
+}}
 
-RESOURCE GAPS:
-List each undefined role, team, or resource. One dash-prefixed bullet per item.
+Audience-relevant categories to analyze (identify ALL gaps — no minimum or maximum per category):
+{categories_block}
+
+Rules:
+- Be specific: name the actual process step, document section, or system where each gap exists
+- Only report real gaps found in this document — do not include generic placeholder text
+- If a category has no gaps for this audience, omit it from "gaps" entirely
+- "edge_cases" and "resource_gaps" must always appear in the output (use [] if genuinely none found)
+{edge_hint}
 
 Process Document:
 {process_document}"""

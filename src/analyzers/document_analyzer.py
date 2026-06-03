@@ -1,7 +1,9 @@
 """Document analysis engines."""
 
+import json
+import re
 from typing import List, Dict, Optional
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from src.document_loaders import DocumentContent
 from src.llm_integration import AzureLLMClient, PromptBuilder
 
@@ -32,14 +34,22 @@ class ProcessDocument:
 
 @dataclass
 class GapAnalysis:
-    """Gap analysis results."""
-    missing_steps: List[str]
-    undefined_dependencies: List[str]
-    incomplete_transformations: List[str]
-    missing_integrations: List[str]
-    error_handling_gaps: List[str]
-    security_gaps: List[str]
-    resource_gaps: List[str]
+    """
+    Dynamic, audience-aware gap analysis results.
+
+    gaps_by_category : audience-specific category names → list of gap strings.
+                       Categories vary per audience (e.g. developer vs. business).
+    edge_cases       : always present — boundary conditions, unusual inputs,
+                       failure scenarios, and unaddressed exception paths.
+    resource_gaps    : always present — missing role assignments, undefined
+                       ownership, or unidentified responsible teams.
+    ranked_gaps      : all gaps sorted by importance (1–10) after the ranking pass.
+                       Each entry is a dict with keys: description, category, importance.
+    """
+    gaps_by_category: Dict[str, List[str]] = field(default_factory=dict)
+    edge_cases: List[str] = field(default_factory=list)
+    resource_gaps: List[str] = field(default_factory=list)
+    ranked_gaps: List[Dict] = field(default_factory=list)
 
 
 class DocumentAnalyzer:
@@ -184,8 +194,17 @@ class ProcessDocumentBuilder:
             process_flow_ascii=results.get("process_flow_ascii", ""),
         )
 
+_RANKING_SYSTEM = (
+    "You are a business risk analyst. Rank the provided gaps by how critical they are "
+    "to address. Return ONLY a JSON array of integers."
+)
+
+
 class GapAnalyzer:
-    """Identifies gaps and missing information in process documents."""
+    """
+    Identifies gaps in a process document using audience-specific prompts,
+    then ranks every gap by business importance in a second LLM pass.
+    """
 
     def __init__(self):
         self.llm = AzureLLMClient()
@@ -194,80 +213,144 @@ class GapAnalyzer:
         self,
         process_document: ProcessDocument,
         context_block: str = "",
+        audience_key: str = "new_employee",
+        audience_note: str = "",
+        cluster_edge_cases: Optional[List[str]] = None,
     ) -> GapAnalysis:
-        """Analyze process document for gaps and missing information."""
-        doc_text = f"""
-Overview: {process_document.overview}
-Processes: {process_document.integrated_processes}
-Dependencies: {process_document.dependencies}
-Data Flow: {process_document.data_flow}
-Decision Points: {process_document.decision_points}
-Systems: {process_document.systems_and_components}
-"""
-
-        prompt = PromptBuilder.build_gap_analysis_prompt(doc_text)
-        if context_block:
-            prompt = context_block + "\n\n" + prompt
-        gap_response = self.llm.query(prompt)
-
-        return self._parse_gaps(gap_response)
-
-    @staticmethod
-    def _parse_gaps(text: str) -> GapAnalysis:
-        """Parse gap analysis response into structured data."""
-        return GapAnalysis(
-            missing_steps=GapAnalyzer._extract_category(text, "missing", 5),
-            undefined_dependencies=GapAnalyzer._extract_category(text, "undefined", 5),
-            incomplete_transformations=GapAnalyzer._extract_category(text, "transformation", 5),
-            missing_integrations=GapAnalyzer._extract_category(text, "integration", 5),
-            error_handling_gaps=GapAnalyzer._extract_category(text, "error", 5),
-            security_gaps=GapAnalyzer._extract_category(text, "security", 5),
-            resource_gaps=GapAnalyzer._extract_category(text, "resource", 5)
+        """
+        Two-pass gap analysis:
+          Pass 1 — identify all gaps in audience-specific categories plus
+                   edge cases and resource gaps (JSON output).
+          Pass 2 — rank every identified gap 1–10 by business importance.
+        """
+        doc_text = (
+            f"Overview: {process_document.overview}\n"
+            f"Processes: {process_document.integrated_processes}\n"
+            f"Dependencies: {process_document.dependencies}\n"
+            f"Data Flow: {process_document.data_flow}\n"
+            f"Decision Points: {process_document.decision_points}\n"
+            f"Systems: {process_document.systems_and_components}\n"
         )
 
+        prompt = PromptBuilder.build_gap_analysis_prompt(
+            doc_text,
+            audience_key=audience_key,
+            audience_note=audience_note,
+            cluster_edge_cases=cluster_edge_cases,
+        )
+        if context_block:
+            prompt = context_block + "\n\n" + prompt
+
+        gap_response = self.llm.query(prompt, max_tokens=5000)
+        gaps_by_category, edge_cases, resource_gaps = self._parse_gap_response(gap_response)
+
+        # Build flat list of all gaps for the ranking pass
+        all_gaps: List[Dict] = [
+            {"category": cat, "description": desc}
+            for cat, descs in gaps_by_category.items()
+            for desc in descs
+        ] + [
+            {"category": "Edge Cases", "description": ec}
+            for ec in edge_cases
+        ] + [
+            {"category": "Resource Gaps", "description": rg}
+            for rg in resource_gaps
+        ]
+
+        ranked_gaps = self._rank_gaps(all_gaps)
+
+        return GapAnalysis(
+            gaps_by_category=gaps_by_category,
+            edge_cases=edge_cases,
+            resource_gaps=resource_gaps,
+            ranked_gaps=ranked_gaps,
+        )
+
+    # ------------------------------------------------------------------
+    # Pass 1 — parse JSON gap response
+    # ------------------------------------------------------------------
+
     @staticmethod
-    def _extract_category(text: str, category: str, limit: int) -> List[str]:
-        """Extract bullet items under the gap section matching `category`."""
-        # Map each category to the section header keywords used in the prompt
-        header_map = {
-            "missing": ["MISSING STEPS"],
-            "undefined": ["UNDEFINED DEPENDENCIES"],
-            "transformation": ["INCOMPLETE TRANSFORMATIONS"],
-            "integration": ["MISSING INTEGRATIONS"],
-            "error": ["ERROR HANDLING GAPS"],
-            "security": ["SECURITY GAPS"],
-            "resource": ["RESOURCE GAPS"],
-        }
-        target_headers = header_map.get(category.lower(), [category.upper()])
+    def _parse_gap_response(text: str) -> tuple:
+        """
+        Parse the JSON gap-analysis response.
+        Returns (gaps_by_category, edge_cases, resource_gaps).
+        Falls back to empty structures if JSON cannot be parsed.
+        """
+        m = re.search(r'\{[\s\S]*\}', text)
+        if not m:
+            return {}, [], []
 
-        lines = text.split('\n')
-        in_section = False
-        items: List[str] = []
+        try:
+            data = json.loads(m.group())
+        except json.JSONDecodeError:
+            # Try stripping trailing commas before the closing bracket/brace
+            try:
+                cleaned = re.sub(r',(\s*[}\]])', r'\1', m.group())
+                data = json.loads(cleaned)
+            except Exception:
+                return {}, [], []
 
-        for line in lines:
-            stripped = line.strip()
-            upper = stripped.upper().rstrip(':')
+        gaps_by_category: Dict[str, List[str]] = {}
+        for gap in data.get("gaps", []):
+            cat = str(gap.get("category", "Other")).strip()
+            desc = str(gap.get("description", "")).strip()
+            if cat and desc:
+                gaps_by_category.setdefault(cat, []).append(desc)
 
-            # Detect section header (ends with colon or is ALL CAPS)
-            if stripped.endswith(':') and len(stripped) > 3:
-                in_section = any(h in upper for h in target_headers)
-                continue
+        edge_cases = [str(e).strip() for e in data.get("edge_cases", []) if str(e).strip()]
+        resource_gaps = [str(r).strip() for r in data.get("resource_gaps", []) if str(r).strip()]
 
-            if in_section:
-                item = stripped.lstrip('-•*+ ').strip()
-                # Skip template artifact lines from prompt format
-                if item.startswith('(bullet:') or item in ('...', '….') or item.startswith('[') or item.startswith('List each'):
-                    continue
-                if len(item) > 5:
-                    items.append(item)
-                    if len(items) >= limit:
-                        break
-                elif not stripped:
-                    pass  # skip blank lines within section
-                elif stripped[0].isupper() and stripped.endswith(':'):
-                    break  # hit next section
+        return gaps_by_category, edge_cases, resource_gaps
 
-        return items[:limit] if items else [f"No {category} gaps identified"]
+    # ------------------------------------------------------------------
+    # Pass 2 — importance ranking
+    # ------------------------------------------------------------------
+
+    def _rank_gaps(self, gaps: List[Dict]) -> List[Dict]:
+        """
+        Ask the LLM to rate each gap 1–10 by business criticality.
+        Returns all gaps sorted descending by importance.
+        Falls back to importance=5 for everything on any error.
+        """
+        if not gaps:
+            return []
+
+        lines = "\n".join(
+            f"[{i+1}] [{g['category']}] {g['description']}"
+            for i, g in enumerate(gaps)
+        )
+        prompt = (
+            "Rate each gap 1–10 for business criticality:\n"
+            "10 = Critical (blocks operations, security breach, data loss)\n"
+            "7–9 = High (significant process failure risk, compliance issue)\n"
+            "4–6 = Medium (process inefficiency, documentation clarity issue)\n"
+            "1–3 = Low (minor improvement, cosmetic)\n\n"
+            f"Gaps:\n{lines}\n\n"
+            "Return ONLY a JSON integer array in the same order. "
+            "Example for 4 gaps: [8, 3, 7, 5]"
+        )
+
+        try:
+            result = self.llm.query(prompt, system_message=_RANKING_SYSTEM, max_tokens=500)
+            match = re.search(r'\[[\s\S]*?\]', result)
+            if match:
+                scores = json.loads(match.group())
+                if isinstance(scores, list) and len(scores) == len(gaps):
+                    ranked = [
+                        {**g, "importance": max(1, min(10, int(float(s))))}
+                        for g, s in zip(gaps, scores)
+                    ]
+                    return sorted(ranked, key=lambda x: x["importance"], reverse=True)
+        except Exception:
+            pass
+
+        # Fallback: neutral importance
+        return sorted(
+            [{**g, "importance": 5} for g in gaps],
+            key=lambda x: x["importance"],
+            reverse=True,
+        )
 
 
 class ClarificationQuestionGenerator:
@@ -305,15 +388,14 @@ Systems: {doc.systems_and_components}
     @staticmethod
     def _format_gap_analysis(gaps: GapAnalysis) -> str:
         """Format gap analysis for LLM."""
-        return f"""
-Missing Steps: {', '.join(gaps.missing_steps)}
-Undefined Dependencies: {', '.join(gaps.undefined_dependencies)}
-Incomplete Transformations: {', '.join(gaps.incomplete_transformations)}
-Missing Integrations: {', '.join(gaps.missing_integrations)}
-Error Handling Gaps: {', '.join(gaps.error_handling_gaps)}
-Security Gaps: {', '.join(gaps.security_gaps)}
-Resource Gaps: {', '.join(gaps.resource_gaps)}
-"""
+        lines = []
+        for cat, items in gaps.gaps_by_category.items():
+            lines.append(f"{cat}: {', '.join(items)}")
+        if gaps.edge_cases:
+            lines.append(f"Edge Cases: {', '.join(gaps.edge_cases)}")
+        if gaps.resource_gaps:
+            lines.append(f"Resource Gaps: {', '.join(gaps.resource_gaps)}")
+        return "\n".join(lines) if lines else "No gaps identified."
 
     @staticmethod
     def _parse_questions(text: str) -> List[Dict[str, str]]:

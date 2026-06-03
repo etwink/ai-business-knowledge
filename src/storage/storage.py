@@ -99,14 +99,12 @@ class AnalysisStorage:
         
         gaps_data = {
             "version": version,
+            "format": "v2",
             "created_at": datetime.now().isoformat(),
-            "missing_steps": gap_analysis.missing_steps,
-            "undefined_dependencies": gap_analysis.undefined_dependencies,
-            "incomplete_transformations": gap_analysis.incomplete_transformations,
-            "missing_integrations": gap_analysis.missing_integrations,
-            "error_handling_gaps": gap_analysis.error_handling_gaps,
-            "security_gaps": gap_analysis.security_gaps,
-            "resource_gaps": gap_analysis.resource_gaps
+            "gaps_by_category": gap_analysis.gaps_by_category,
+            "edge_cases": gap_analysis.edge_cases,
+            "resource_gaps": gap_analysis.resource_gaps,
+            "ranked_gaps": gap_analysis.ranked_gaps,
         }
         
         file_path = session_dir / f"gap_analysis_{version}.json"

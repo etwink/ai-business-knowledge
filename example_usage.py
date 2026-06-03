@@ -67,18 +67,17 @@ def example_analysis(document_paths):
     gap_analyzer = GapAnalyzer()
     gaps = gap_analyzer.analyze_gaps(process_doc)
 
-    print("\nGaps Identified:")
-    print(f"  • Missing Steps: {len(gaps.missing_steps)} identified")
-    for item in gaps.missing_steps[:3]:
-        print(f"    - {item}")
+    total_gaps = sum(len(v) for v in gaps.gaps_by_category.values())
+    print(f"\nGaps Identified: {total_gaps} across {len(gaps.gaps_by_category)} categories")
+    for cat, items in list(gaps.gaps_by_category.items())[:3]:
+        print(f"\n  • {cat}: {len(items)} identified")
+        for item in items[:3]:
+            print(f"    - {item}")
 
-    print(f"\n  • Undefined Dependencies: {len(gaps.undefined_dependencies)} identified")
-    for item in gaps.undefined_dependencies[:3]:
-        print(f"    - {item}")
-
-    print(f"\n  • Missing Integrations: {len(gaps.missing_integrations)} identified")
-    for item in gaps.missing_integrations[:3]:
-        print(f"    - {item}")
+    if gaps.edge_cases:
+        print(f"\n  • Edge Cases: {len(gaps.edge_cases)} identified")
+        for item in gaps.edge_cases[:3]:
+            print(f"    - {item}")
 
     # Step 4: Generate clarification questions
     print("\n\n❓ STEP 4: Generating clarification questions...")
@@ -113,15 +112,20 @@ def example_analysis(document_paths):
     # Export gap analysis
     with open(output_dir / "gap_analysis.md", "w") as f:
         f.write("# Gap Analysis\n\n")
-        f.write("## Missing Steps\n")
-        for item in gaps.missing_steps:
-            f.write(f"- {item}\n")
-        f.write("\n## Undefined Dependencies\n")
-        for item in gaps.undefined_dependencies:
-            f.write(f"- {item}\n")
-        f.write("\n## Missing Integrations\n")
-        for item in gaps.missing_integrations:
-            f.write(f"- {item}\n")
+        for cat, items in gaps.gaps_by_category.items():
+            f.write(f"## {cat}\n")
+            for item in items:
+                f.write(f"- {item}\n")
+            f.write("\n")
+        if gaps.edge_cases:
+            f.write("## Edge Cases\n")
+            for item in gaps.edge_cases:
+                f.write(f"- {item}\n")
+            f.write("\n")
+        if gaps.resource_gaps:
+            f.write("## Resource Gaps\n")
+            for item in gaps.resource_gaps:
+                f.write(f"- {item}\n")
 
     # Export questions
     with open(output_dir / "clarification_questions.md", "w") as f:

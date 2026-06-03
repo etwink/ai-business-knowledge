@@ -28,6 +28,7 @@ class ClusterSummary:
     systems_mentioned: list[str] = field(default_factory=list)
     file_count: int = 0
     entry_point: str | None = None
+    edge_cases: list[str] = field(default_factory=list)   # boundary/exception scenarios
 
 
 class HierarchicalSummarizer:
@@ -73,6 +74,7 @@ class HierarchicalSummarizer:
     def _summarize_cobol_cluster(self, cluster: DocumentCluster, context_block: str = "") -> ClusterSummary:
         file_summaries = self._summarize_files_individually(cluster.cobol_files, context_block)
         synthesis = self._synthesize_cobol(cluster, file_summaries, context_block)
+        edge_cases = self._extract_cluster_edge_cases(synthesis, cluster.cluster_name)
         return ClusterSummary(
             cluster_id=cluster.cluster_id,
             cluster_name=cluster.cluster_name,
@@ -82,6 +84,7 @@ class HierarchicalSummarizer:
             systems_mentioned=list(cluster.cobol_program_names)[:25],
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
+            edge_cases=edge_cases,
         )
 
     def _synthesize_cobol(
@@ -128,6 +131,7 @@ Be specific to the actual code described above."""
             cluster.doc_files, cluster.cobol_program_names, context_block
         )
         synthesis = self._synthesize_mixed(cluster, cobol_summaries, doc_summaries, context_block)
+        edge_cases = self._extract_cluster_edge_cases(synthesis, cluster.cluster_name)
         return ClusterSummary(
             cluster_id=cluster.cluster_id,
             cluster_name=cluster.cluster_name,
@@ -137,6 +141,7 @@ Be specific to the actual code described above."""
             systems_mentioned=list(cluster.cobol_program_names)[:10],
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
+            edge_cases=edge_cases,
         )
 
     def _summarize_doc_files_with_cobol_context(
@@ -213,6 +218,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             synthesis = self._summarize_small_doc_cluster(cluster, context_block)
         else:
             synthesis = self._summarize_large_doc_cluster(cluster, context_block)
+        edge_cases = self._extract_cluster_edge_cases(synthesis, cluster.cluster_name)
         return ClusterSummary(
             cluster_id=cluster.cluster_id,
             cluster_name=cluster.cluster_name,
@@ -220,6 +226,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             summary=synthesis,
             key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             file_count=cluster.file_count,
+            edge_cases=edge_cases,
         )
 
     def _summarize_small_doc_cluster(self, cluster: DocumentCluster, context_block: str = "") -> str:
@@ -291,6 +298,34 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             "use these to understand how this subsystem fits into the broader process):\n"
             + "\n\n".join(parts)
         )
+
+    def _extract_cluster_edge_cases(self, synthesis: str, cluster_name: str) -> list[str]:
+        """
+        Quick follow-up pass on a cluster synthesis to extract edge cases —
+        boundary conditions, unusual inputs, and unaddressed exception paths.
+        Returns a list of bullet strings (empty list on any failure).
+        """
+        prompt = (
+            f'Based on the following summary of the "{cluster_name}" cluster, '
+            "identify specific edge cases — unusual inputs, boundary conditions, "
+            "failure scenarios, and exception paths — that are either mentioned but "
+            "not fully addressed, or implied by the logic but entirely undocumented.\n\n"
+            f"Cluster summary:\n{synthesis[:2500]}\n\n"
+            "List every edge case you can identify. Be concrete and specific to this "
+            "cluster's actual functionality. Use one dash-prefixed bullet per item.\n"
+            "If no meaningful edge cases are apparent, output: - None identified"
+        )
+        try:
+            result = self.llm.query(prompt, max_tokens=1000)
+            items = [
+                line.strip().lstrip("-•* ").strip()
+                for line in result.splitlines()
+                if line.strip() and len(line.strip()) > 15
+            ]
+            # Drop the "None identified" placeholder
+            return [i for i in items if "none identified" not in i.lower()]
+        except Exception:
+            return []
 
     def _summarize_files_individually(
         self, paths: list[Path], context_block: str = ""
