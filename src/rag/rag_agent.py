@@ -2,15 +2,18 @@
 RAG agent: adaptive tiered retrieval with relevance filtering and sufficiency gating.
 
 Retrieval loop per query:
-  1. Pull X chunks from process doc, Y from word docs, Z from code.
-  2. Batch-check chunk relevance (one LLM call) — drop irrelevant chunks and
+  1. Pull X chunks from process doc, Y from word docs, Z from code, and W from
+     cluster summaries (plain-English descriptions of COBOL/code clusters).
+  2. Two-stage cluster expansion: for each cluster summary retrieved, pull top-k
+     raw code chunks from that cluster's files as a follow-up stage.
+  3. Batch-check chunk relevance (one LLM call) — drop irrelevant chunks and
      add their indices to a per-query exclusion set so they are never re-pulled.
-  3. Check sufficiency (one LLM call) — if enough context, stop.
-  4. If not sufficient and iterations remain:
+  4. Check sufficiency (one LLM call) — if enough context, stop.
+  5. If not sufficient and iterations remain:
        a. Check "does this query need code?" (once per query, after first pass).
        b. Pull another round with exclusions applied and code omitted if unneeded.
-       Repeat from step 2.
-  5. Generate a grounded answer from all accepted chunks.
+       Repeat from step 3.
+  6. Generate a grounded answer from all accepted chunks.
 """
 
 from __future__ import annotations
@@ -24,11 +27,13 @@ from .knowledge_base import KnowledgeBase
 # Retrieval parameters
 # ---------------------------------------------------------------------------
 
-_DEFAULT_PROCESS_DOC_K = 3   # chunks pulled from generated process document per iteration
-_DEFAULT_WORD_K = 3          # chunks pulled from word/doc files per iteration
-_DEFAULT_CODE_K = 2          # chunks pulled from code/other files per iteration
-_MAX_ITERATIONS = 3          # max retrieval-filter-check cycles before generating answer
-_CHUNK_PREVIEW_CHARS = 400   # how much of each chunk to show the relevance judge
+_DEFAULT_PROCESS_DOC_K = 3       # chunks pulled from generated process document per iteration
+_DEFAULT_WORD_K = 3              # chunks pulled from word/doc files per iteration
+_DEFAULT_CODE_K = 2              # chunks pulled from code/other files per iteration
+_DEFAULT_CLUSTER_SUMMARY_K = 2   # cluster summary chunks pulled per iteration
+_DEFAULT_CLUSTER_RAW_K = 5       # raw code chunks fetched per matched cluster (stage 2)
+_MAX_ITERATIONS = 3              # max retrieval-filter-check cycles before generating answer
+_CHUNK_PREVIEW_CHARS = 400       # how much of each chunk to show the relevance judge
 
 # ---------------------------------------------------------------------------
 # LLM system prompts
@@ -90,6 +95,8 @@ class RAGAgent:
         process_doc_k: int = _DEFAULT_PROCESS_DOC_K,
         word_k: int = _DEFAULT_WORD_K,
         code_k: int = _DEFAULT_CODE_K,
+        cluster_summary_k: int = _DEFAULT_CLUSTER_SUMMARY_K,
+        cluster_raw_k: int = _DEFAULT_CLUSTER_RAW_K,
         audience_note: str = "",
     ):
         from src.llm_integration import AzureLLMClient
@@ -97,6 +104,8 @@ class RAGAgent:
         self._process_doc_k = process_doc_k
         self._word_k = word_k
         self._code_k = code_k
+        self._cluster_summary_k = cluster_summary_k
+        self._cluster_raw_k = cluster_raw_k
         self._llm = AzureLLMClient()
         self._history: list[dict] = []
         self._audience_note = audience_note
@@ -123,6 +132,9 @@ class RAGAgent:
         include_code = True
         needs_code_checked = False
 
+        # Track which cluster IDs have already been expanded to avoid duplicate pulls
+        expanded_cluster_ids: set[str] = set()
+
         for iteration in range(_MAX_ITERATIONS):
             # After the first pass: check once whether code is needed at all
             if iteration == 1 and not needs_code_checked:
@@ -134,11 +146,26 @@ class RAGAgent:
                 process_doc_k=self._process_doc_k,
                 word_k=self._word_k,
                 code_k=self._code_k,
+                cluster_summary_k=self._cluster_summary_k,
                 exclude_ids=excluded_ids,
                 include_code=include_code,
             )
 
-            new_chunks = tiered["process_doc"] + tiered["word"] + tiered["code"]
+            # Stage 2: for each cluster summary retrieved, pull raw code from that cluster
+            cluster_raw = self._expand_cluster_summaries(
+                enriched_query,
+                tiered.get("cluster_summary", []),
+                expanded_cluster_ids,
+                excluded_ids,
+            )
+
+            new_chunks = (
+                tiered["cluster_summary"]
+                + tiered["process_doc"]
+                + tiered["word"]
+                + tiered["code"]
+                + cluster_raw
+            )
             if not new_chunks:
                 break
 
@@ -255,6 +282,34 @@ class RAGAgent:
             return result.strip().upper().startswith("Y")
         except Exception:
             return True
+
+    def _expand_cluster_summaries(
+        self,
+        query: str,
+        summary_chunks: list[dict],
+        expanded_ids: set[str],
+        excluded_ids: set[int],
+    ) -> list[dict]:
+        """
+        Stage-2 retrieval: for each cluster summary chunk, pull the top-k raw code/content
+        chunks from that cluster that haven't been seen yet.
+
+        Mutates *expanded_ids* so each cluster is only expanded once per query.
+        """
+        raw_chunks: list[dict] = []
+        for sc in summary_chunks:
+            cid = sc.get("cluster_id")
+            if not cid or cid in expanded_ids:
+                continue
+            expanded_ids.add(cid)
+            raw = self.kb.search_within_cluster(
+                query,
+                cluster_id=cid,
+                top_k=self._cluster_raw_k,
+                exclude_ids=excluded_ids,
+            )
+            raw_chunks.extend(raw)
+        return raw_chunks
 
     # ------------------------------------------------------------------
     # Answer generation

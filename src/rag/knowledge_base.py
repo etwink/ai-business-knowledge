@@ -63,7 +63,9 @@ class Chunk:
     file_type: str
     chunk_index: int
     char_start: int
-    tier: int = 3   # 1=process_doc, 2=word, 3=other
+    tier: int = 3          # 1=word/doc, 2=process_doc, 3=other/code
+    cluster_id: str | None = None    # set during build when cluster map is provided
+    cluster_name: str | None = None  # human-readable cluster label
 
 
 class KnowledgeBase:
@@ -94,8 +96,17 @@ class KnowledgeBase:
         self,
         files: list[Path],
         progress_callback=None,
+        file_cluster_map: dict[str, str] | None = None,
+        file_cluster_names: dict[str, str] | None = None,
     ) -> int:
-        """Chunk + embed all files and persist to disk.  Returns total chunk count."""
+        """
+        Chunk + embed all files and persist to disk.
+
+        file_cluster_map  : {filename → cluster_id}  — stamps cluster metadata on
+                            each chunk so targeted cluster retrieval works later.
+        file_cluster_names: {filename → cluster_name} — human-readable label.
+        Returns total chunk count.
+        """
         self.persist_dir.mkdir(parents=True, exist_ok=True)
 
         all_chunks: list[Chunk] = []
@@ -103,7 +114,9 @@ class KnowledgeBase:
             if progress_callback:
                 progress_callback(f"Reading {path.name}", i + 1, len(files) * 2)
             tier = 1 if path.suffix.lower() in _WORD_EXTENSIONS else 3
-            all_chunks.extend(_chunk_file(path, tier=tier))
+            cid = (file_cluster_map or {}).get(path.name)
+            cname = (file_cluster_names or {}).get(path.name)
+            all_chunks.extend(_chunk_file(path, tier=tier, cluster_id=cid, cluster_name=cname))
 
         if not all_chunks:
             return 0
@@ -154,6 +167,90 @@ class KnowledgeBase:
         self._persist(merged_chunks, merged_emb)
         return len(new_chunks)
 
+    def index_cluster_summaries(self, cluster_summaries) -> int:
+        """
+        Index cluster summary objects as tier-1 chunks so natural-language queries
+        can discover COBOL/code clusters through their plain-English descriptions.
+
+        Each summary becomes chunks with file_type="cluster_summary" and the
+        cluster's ID stamped on them.  Can be called after build() or load.
+        Merges into the existing index and re-persists.
+        Returns the number of new chunks added.
+        """
+        self._ensure_loaded()
+
+        new_chunks: list[Chunk] = []
+        for cs in cluster_summaries:
+            cid = getattr(cs, "cluster_id", None) or str(cs)
+            cname = getattr(cs, "cluster_name", cid)
+            synthesis = getattr(cs, "summary", "") or ""
+            if not synthesis:
+                continue
+            source = f"[Cluster Summary — {cname}]"
+            text_chunks = _chunk_text(synthesis, source_file=source, file_type="cluster_summary", tier=1)
+            for c in text_chunks:
+                c.cluster_id = cid
+                c.cluster_name = cname
+            new_chunks.extend(text_chunks)
+
+        if not new_chunks:
+            return 0
+
+        model = _get_model()
+        texts = [c.text for c in new_chunks]
+        new_emb = model.encode(texts, normalize_embeddings=True, show_progress_bar=False).astype(np.float32)
+
+        merged_chunks = self._chunks + new_chunks
+        merged_emb = (
+            np.vstack([self._embeddings, new_emb])
+            if self._embeddings is not None and len(self._embeddings)
+            else new_emb
+        )
+        self._persist(merged_chunks, merged_emb)
+        return len(new_chunks)
+
+    def search_within_cluster(
+        self,
+        query: str,
+        cluster_id: str,
+        top_k: int = 8,
+        exclude_ids: set[int] | None = None,
+    ) -> list[dict]:
+        """
+        Return top-k raw code/content chunks belonging to *cluster_id*, excluding
+        cluster_summary chunks (those are the index, not the payload).
+
+        Results include "_array_idx" for exclusion tracking.
+        """
+        self._ensure_loaded()
+        if self._embeddings is None or not self._chunks:
+            return []
+
+        model = _get_model()
+        q_emb = model.encode([query], normalize_embeddings=True)[0].astype(np.float32)
+        raw_scores: np.ndarray = self._embeddings @ q_emb
+
+        excluded = exclude_ids or set()
+        indices = [
+            i for i, c in enumerate(self._chunks)
+            if c.cluster_id == cluster_id
+            and c.file_type != "cluster_summary"
+            and i not in excluded
+        ]
+        if not indices:
+            return []
+
+        idx_arr = np.array(indices)
+        scores = raw_scores[idx_arr]
+        top_n = min(top_k, len(idx_arr))
+        top_local = np.argsort(scores)[::-1][:top_n]
+        return [
+            {**asdict(self._chunks[int(idx_arr[li])]),
+             "score": float(raw_scores[int(idx_arr[li])]),
+             "_array_idx": int(idx_arr[li])}
+            for li in top_local
+        ]
+
     def search(self, query: str, top_k: int = 25) -> list[dict]:
         """Return top-k chunks ranked by tier-boosted cosine similarity."""
         self._ensure_loaded()
@@ -184,24 +281,26 @@ class KnowledgeBase:
         process_doc_k: int = 3,
         word_k: int = 3,
         code_k: int = 2,
+        cluster_summary_k: int = 2,
         exclude_ids: set[int] | None = None,
         include_code: bool = True,
     ) -> dict[str, list[dict]]:
         """
         Pull top-k chunks separately from each tier, respecting per-query exclusions.
 
-        Returns {"process_doc": [...], "word": [...], "code": [...]}.
+        Returns {"process_doc": [...], "word": [...], "code": [...], "cluster_summary": [...]}.
         Each chunk dict includes "_array_idx" (position in the internal chunk array)
         so callers can track which chunks to exclude in subsequent calls.
 
-        Tier mapping:
-          tier 2 → process_doc   (generated process document sections)
-          tier 1 → word          (.doc / .docx business documents)
-          tier 3 → code          (everything else: COBOL, Python, Excel, etc.)
+        Tier / file_type mapping:
+          file_type "cluster_summary" → cluster_summary  (plain-English cluster descriptions)
+          tier 2                      → process_doc       (generated process document sections)
+          tier 1 (non-summary)        → word              (.doc / .docx business documents)
+          tier 3                      → code              (everything else: COBOL, Python, Excel…)
         """
         self._ensure_loaded()
         if self._embeddings is None or not self._chunks:
-            return {"process_doc": [], "word": [], "code": []}
+            return {"cluster_summary": [], "process_doc": [], "word": [], "code": []}
 
         model = _get_model()
         q_emb = model.encode([query], normalize_embeddings=True)[0].astype(np.float32)
@@ -209,11 +308,15 @@ class KnowledgeBase:
 
         excluded = exclude_ids or set()
 
-        tier_indices: dict[str, list[int]] = {"process_doc": [], "word": [], "code": []}
+        tier_indices: dict[str, list[int]] = {
+            "cluster_summary": [], "process_doc": [], "word": [], "code": []
+        }
         for i, chunk in enumerate(self._chunks):
             if i in excluded:
                 continue
-            if chunk.tier == 2:
+            if chunk.file_type == "cluster_summary":
+                tier_indices["cluster_summary"].append(i)
+            elif chunk.tier == 2:
                 tier_indices["process_doc"].append(i)
             elif chunk.tier == 1:
                 tier_indices["word"].append(i)
@@ -221,12 +324,15 @@ class KnowledgeBase:
                 tier_indices["code"].append(i)
 
         limits = {
+            "cluster_summary": cluster_summary_k,
             "process_doc": process_doc_k,
             "word": word_k,
             "code": code_k if include_code else 0,
         }
 
-        results: dict[str, list[dict]] = {"process_doc": [], "word": [], "code": []}
+        results: dict[str, list[dict]] = {
+            "cluster_summary": [], "process_doc": [], "word": [], "code": []
+        }
         for group, indices in tier_indices.items():
             k = limits[group]
             if k == 0 or not indices:
@@ -346,11 +452,21 @@ def _chunk_text(
     return chunks
 
 
-def _chunk_file(path: Path, tier: int = 3) -> list[Chunk]:
+def _chunk_file(
+    path: Path,
+    tier: int = 3,
+    cluster_id: str | None = None,
+    cluster_name: str | None = None,
+) -> list[Chunk]:
     """Load a file via the document loader and split into overlapping chunks."""
     try:
         from src.document_loaders import get_loader
         doc = get_loader(path).load()
-        return _chunk_text(doc.content, source_file=path.name, file_type=doc.file_type, tier=tier)
+        chunks = _chunk_text(doc.content, source_file=path.name, file_type=doc.file_type, tier=tier)
+        if cluster_id is not None:
+            for c in chunks:
+                c.cluster_id = cluster_id
+                c.cluster_name = cluster_name
+        return chunks
     except Exception:
         return []

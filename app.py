@@ -1444,9 +1444,30 @@ def render_knowledge_chat_page() -> None:
                 status_text.write(msg)
 
             try:
-                n_chunks = kb.build(all_files, progress_callback=on_kb_progress)
+                # Build file→cluster maps so each chunk is stamped with its cluster
+                _file_cluster_map: dict[str, str] = {}
+                _file_cluster_names: dict[str, str] = {}
+                _clusters = st.session_state.get("bulk_clusters") or []
+                for _cl in _clusters:
+                    for _f in list(getattr(_cl, "cobol_files", [])) + list(getattr(_cl, "doc_files", [])):
+                        _file_cluster_map[_f.name] = _cl.cluster_id
+                        _file_cluster_names[_f.name] = _cl.cluster_name
 
-                # Also index the generated process document as tier-1 (highest priority)
+                n_chunks = kb.build(
+                    all_files,
+                    progress_callback=on_kb_progress,
+                    file_cluster_map=_file_cluster_map or None,
+                    file_cluster_names=_file_cluster_names or None,
+                )
+
+                # Index cluster summaries as searchable plain-English descriptions
+                _cluster_summaries = st.session_state.get("bulk_cluster_summaries") or []
+                summary_chunks = 0
+                if _cluster_summaries:
+                    status_text.write("Indexing cluster summaries…")
+                    summary_chunks = kb.index_cluster_summaries(_cluster_summaries)
+
+                # Also index the generated process document as tier-2
                 proc_doc = st.session_state.get("process_document")
                 extra_chunks = 0
                 if proc_doc:
@@ -1455,7 +1476,12 @@ def render_knowledge_chat_page() -> None:
 
                 progress_bar.progress(1.0, text="Done!")
                 status_text.empty()
-                extra_msg = f" + {extra_chunks} process-doc chunks" if extra_chunks else ""
+                extra_parts = []
+                if summary_chunks:
+                    extra_parts.append(f"{summary_chunks} cluster-summary chunks")
+                if extra_chunks:
+                    extra_parts.append(f"{extra_chunks} process-doc chunks")
+                extra_msg = (" + " + ", ".join(extra_parts)) if extra_parts else ""
                 st.success(
                     f"Knowledge base built: {n_chunks} chunks from {len(all_files)} files{extra_msg}."
                 )
