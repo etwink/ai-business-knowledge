@@ -12,10 +12,36 @@ For pure-doc clusters:  all files are summarized together if ≤ 5 files, or in
   batches of 4 that are then rolled up into one cluster summary.
 """
 
+import time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from pathlib import Path
 
 from .cluster_builder import DocumentCluster
+
+# ---------------------------------------------------------------------------
+# Concurrency / retry settings
+# ---------------------------------------------------------------------------
+_MAX_SUMMARY_WORKERS = 4   # parallel LLM calls for per-file summaries
+_RATE_LIMIT_RETRY_WAIT = 60  # seconds to pause after an HTTP 429
+_RATE_LIMIT_MAX_RETRIES = 3  # max retry attempts per call
+
+
+def _llm_call_with_retry(fn, *args, **kwargs):
+    """
+    Call fn(*args, **kwargs), transparently retrying on Azure rate-limit (429) errors.
+    Sleeps _RATE_LIMIT_RETRY_WAIT seconds between attempts so the per-minute quota
+    has time to refresh before the next try.
+    """
+    from openai import RateLimitError
+    for attempt in range(_RATE_LIMIT_MAX_RETRIES + 1):
+        try:
+            return fn(*args, **kwargs)
+        except RateLimitError:
+            if attempt < _RATE_LIMIT_MAX_RETRIES:
+                time.sleep(_RATE_LIMIT_RETRY_WAIT)
+            else:
+                raise
 
 
 @dataclass
@@ -119,7 +145,7 @@ Write a cohesive subsystem summary ({lower}–{upper} words) covering:
 6. Error handling approach
 
 Be specific to the actual code described above."""
-        return self.llm.query(prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=4000)
 
     # ------------------------------------------------------------------
     # Mixed cluster (COBOL + matching docs)
@@ -150,24 +176,35 @@ Be specific to the actual code described above."""
         cobol_program_names: set[str],
         context_block: str = "",
     ) -> dict[str, str]:
-        """Summarize Word/Excel docs, informing the LLM of the COBOL programs they may reference."""
+        """Summarize Word/Excel docs in parallel, informing the LLM of the COBOL programs they may reference."""
         context_note = (
             f"Note: this document is associated with the following COBOL programs: "
             f"{', '.join(sorted(cobol_program_names)[:15])}. "
             "Highlight any references to those programs or the business rules they implement."
         )
         context_part = f"\n{context_block}\n" if context_block else ""
-        summaries: dict[str, str] = {}
-        for path in doc_files:
+
+        def _summarize_one(path: Path):
             doc = _load_doc(path)
             if doc is None:
-                continue
+                return path.name, None
             prompt = (
                 f"Summarize the following business document in 150–250 words.\n"
                 f"{context_note}{context_part}\n\n"
                 f"Document ({path.name}):\n{doc.content[:5000]}"
             )
-            summaries[path.name] = self.llm.query(prompt, max_tokens=2000)
+            return path.name, _llm_call_with_retry(self.llm.query, prompt, max_tokens=2000)
+
+        summaries: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=_MAX_SUMMARY_WORKERS) as executor:
+            futures = {executor.submit(_summarize_one, p): p for p in doc_files}
+            for future in as_completed(futures):
+                try:
+                    name, summary = future.result()
+                    if summary is not None:
+                        summaries[name] = summary
+                except Exception:
+                    pass
         return summaries
 
     def _synthesize_mixed(
@@ -207,7 +244,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
 5. Key decision points and business rules
 6. Gaps or discrepancies between the documentation and the code
 7. Error handling and exception paths"""
-        return self.llm.query(prompt, max_tokens=5000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=5000)
 
     # ------------------------------------------------------------------
     # Pure-doc cluster
@@ -243,14 +280,17 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             "Cover: business purpose, key processes, data involved, stakeholders, and important rules.\n"
             f"{context_part}{combined}{shared_block}"
         )
-        return self.llm.query(prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=4000)
 
     def _summarize_large_doc_cluster(self, cluster: DocumentCluster, context_block: str = "") -> str:
-        # Summarize in batches of 4, then roll up
-        batch_summaries: list[str] = []
+        # Build batches of 4, then summarize each batch in parallel
         batch_size = 4
-        for i in range(0, len(cluster.doc_files), batch_size):
-            batch = cluster.doc_files[i : i + batch_size]
+        batches = [
+            cluster.doc_files[i : i + batch_size]
+            for i in range(0, len(cluster.doc_files), batch_size)
+        ]
+
+        def _summarize_batch(batch: list[Path]) -> str:
             combined = ""
             for path in batch:
                 doc = _load_doc(path)
@@ -260,11 +300,22 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
                 f'Summarize this batch of "{cluster.cluster_name}" documents in 250–350 words.\n'
                 f"Cover: key processes, data, business rules.\n{combined}"
             )
-            batch_summaries.append(self.llm.query(prompt, max_tokens=2000))
+            return _llm_call_with_retry(self.llm.query, prompt, max_tokens=2000)
+
+        # Submit all batches in parallel; collect results in original order
+        batch_summaries: list[str] = [""] * len(batches)
+        with ThreadPoolExecutor(max_workers=_MAX_SUMMARY_WORKERS) as executor:
+            future_to_idx = {executor.submit(_summarize_batch, b): i for i, b in enumerate(batches)}
+            for future in as_completed(future_to_idx):
+                idx = future_to_idx[future]
+                try:
+                    batch_summaries[idx] = future.result()
+                except Exception:
+                    batch_summaries[idx] = ""
 
         # Roll up
         batches_text = "\n\n".join(
-            f"Batch {i+1}:\n{s}" for i, s in enumerate(batch_summaries)
+            f"Batch {i+1}:\n{s}" for i, s in enumerate(batch_summaries) if s
         )
         shared_block = self._load_shared_docs_block(cluster)
         lower, upper = _synthesis_word_range(len(cluster.doc_files))
@@ -272,7 +323,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             f'Combine the following batch summaries for "{cluster.cluster_name}" into one cohesive summary ({lower}–{upper} words).\n\n'
             f"{batches_text}{shared_block}"
         )
-        return self.llm.query(rollup_prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, rollup_prompt, max_tokens=4000)
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -316,7 +367,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             "If no meaningful edge cases are apparent, output: - None identified"
         )
         try:
-            result = self.llm.query(prompt, max_tokens=1000)
+            result = _llm_call_with_retry(self.llm.query, prompt, max_tokens=1000)
             items = [
                 line.strip().lstrip("-•* ").strip()
                 for line in result.splitlines()
@@ -330,12 +381,12 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
     def _summarize_files_individually(
         self, paths: list[Path], context_block: str = ""
     ) -> dict[str, str]:
-        """Return {filename: summary} for each file."""
-        summaries: dict[str, str] = {}
-        for path in paths:
+        """Return {filename: summary} for each file, using parallel threads."""
+
+        def _summarize_one(path: Path):
             doc = _load_doc(path)
             if doc is None:
-                continue
+                return path.name, None
             context_part = f"\n{context_block}\n" if context_block else ""
 
             if doc.file_type == "excel":
@@ -398,7 +449,18 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
                 f"{context_part}\n"
                 f"File: {path.name}\n\n{doc.content[:6000]}"
             )
-            summaries[path.name] = self.llm.query(prompt, max_tokens=2000)
+            return path.name, _llm_call_with_retry(self.llm.query, prompt, max_tokens=2000)
+
+        summaries: dict[str, str] = {}
+        with ThreadPoolExecutor(max_workers=_MAX_SUMMARY_WORKERS) as executor:
+            futures = {executor.submit(_summarize_one, p): p for p in paths}
+            for future in as_completed(futures):
+                try:
+                    name, summary = future.result()
+                    if summary is not None:
+                        summaries[name] = summary
+                except Exception:
+                    pass
         return summaries
 
 

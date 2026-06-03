@@ -2,8 +2,11 @@
 
 import json
 import os
+import threading
 from datetime import datetime
 from pathlib import Path
+
+_log_lock = threading.Lock()
 
 
 _LOG_DIR = Path("logs")
@@ -58,7 +61,7 @@ def log_call(
             f"{response}\n"
         )
 
-        with open(_LOG_FILE, "a", encoding="utf-8") as fh:
+        with _log_lock, open(_LOG_FILE, "a", encoding="utf-8") as fh:
             fh.write(entry)
 
     except Exception:
