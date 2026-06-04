@@ -49,7 +49,8 @@ class ClusterSummary:
     cluster_id: str
     cluster_name: str
     cluster_type: str        # "cobol" | "mixed" | "docs"
-    summary: str             # Full narrative cluster summary
+    summary: str             # Full narrative cluster summary (process/business view)
+    technical_summary: str = ""  # Component interaction map (technical view, code clusters only)
     key_processes: list[str] = field(default_factory=list)
     systems_mentioned: list[str] = field(default_factory=list)
     file_count: int = 0
@@ -99,13 +100,19 @@ class HierarchicalSummarizer:
 
     def _summarize_cobol_cluster(self, cluster: DocumentCluster, context_block: str = "") -> ClusterSummary:
         file_summaries = self._summarize_files_individually(cluster.cobol_files, context_block)
-        synthesis = self._synthesize_cobol(cluster, file_summaries, context_block)
+        # Synthesis and technical map are independent — run them in parallel
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_synthesis = ex.submit(self._synthesize_cobol, cluster, file_summaries, context_block)
+            f_tech = ex.submit(self._generate_technical_map, cluster, file_summaries, context_block)
+            synthesis = f_synthesis.result()
+            technical_map = f_tech.result()
         edge_cases = self._extract_cluster_edge_cases(synthesis, cluster.cluster_name)
         return ClusterSummary(
             cluster_id=cluster.cluster_id,
             cluster_name=cluster.cluster_name,
             cluster_type="cobol",
             summary=synthesis,
+            technical_summary=technical_map,
             key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             systems_mentioned=list(cluster.cobol_program_names)[:25],
             file_count=cluster.file_count,
@@ -152,17 +159,29 @@ Be specific to the actual code described above."""
     # ------------------------------------------------------------------
 
     def _summarize_mixed_cluster(self, cluster: DocumentCluster, context_block: str = "") -> ClusterSummary:
-        cobol_summaries = self._summarize_files_individually(cluster.cobol_files, context_block)
-        doc_summaries = self._summarize_doc_files_with_cobol_context(
-            cluster.doc_files, cluster.cobol_program_names, context_block
-        )
-        synthesis = self._synthesize_mixed(cluster, cobol_summaries, doc_summaries, context_block)
+        # File summaries for both code and docs are independent — run in parallel
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_cobol = ex.submit(self._summarize_files_individually, cluster.cobol_files, context_block)
+            f_docs = ex.submit(
+                self._summarize_doc_files_with_cobol_context,
+                cluster.doc_files, cluster.cobol_program_names, context_block,
+            )
+            cobol_summaries = f_cobol.result()
+            doc_summaries = f_docs.result()
+        # Synthesis and technical map are independent of each other
+        all_file_summaries = {**cobol_summaries, **doc_summaries}
+        with ThreadPoolExecutor(max_workers=2) as ex:
+            f_synthesis = ex.submit(self._synthesize_mixed, cluster, cobol_summaries, doc_summaries, context_block)
+            f_tech = ex.submit(self._generate_technical_map, cluster, all_file_summaries, context_block)
+            synthesis = f_synthesis.result()
+            technical_map = f_tech.result()
         edge_cases = self._extract_cluster_edge_cases(synthesis, cluster.cluster_name)
         return ClusterSummary(
             cluster_id=cluster.cluster_id,
             cluster_name=cluster.cluster_name,
             cluster_type="mixed",
             summary=synthesis,
+            technical_summary=technical_map,
             key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             systems_mentioned=list(cluster.cobol_program_names)[:10],
             file_count=cluster.file_count,
@@ -245,6 +264,61 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
 6. Gaps or discrepancies between the documentation and the code
 7. Error handling and exception paths"""
         return _llm_call_with_retry(self.llm.query, prompt, max_tokens=5000)
+
+    def _generate_technical_map(
+        self,
+        cluster: DocumentCluster,
+        file_summaries: dict[str, str],
+        context_block: str = "",
+    ) -> str:
+        """
+        Generate a component interaction map for code-containing clusters.
+
+        Language-agnostic: works for COBOL, Java, Python, or any mix.
+        Uses exact names from the source material so the process doc builder
+        has concrete identifiers to anchor to rather than inventing terms.
+        Returns an empty string on failure (non-fatal).
+        """
+        if not file_summaries:
+            return ""
+        dep_info = _format_cobol_dep_info(cluster) if cluster.cobol_program_names else ""
+        dep_block = f"\nDependency / call-chain information:\n{dep_info}\n" if dep_info else ""
+        context_part = f"\n{context_block}\n" if context_block else ""
+        summaries_block = "\n\n".join(
+            f"[{name}]\n{summary}" for name, summary in file_summaries.items()
+        )
+        prompt = (
+            f'Create a technical interaction map for the "{cluster.cluster_name}" cluster.\n'
+            f"{context_part}"
+            f"{dep_block}\n"
+            f"File-level summaries:\n{summaries_block}\n\n"
+            f"Generate the map in exactly these five sections:\n\n"
+            f"1. COMPONENT INVENTORY\n"
+            f"List every file, class, or program with its exact name and a one-sentence role.\n"
+            f"Format: [exact-name] — [what it does]\n\n"
+            f"2. INTERACTION CHAINS\n"
+            f"Describe each main process flow as a chain using exact component names.\n"
+            f"Format: [Trigger] → [ComponentA] → [ComponentB] → [Output]\n"
+            f"Include the mechanism: function call, HTTP request, file read/write, "
+            f"database query, message queue, COBOL CALL, etc.\n\n"
+            f"3. ENTRY POINTS\n"
+            f"What external entities (users, systems, batch jobs, events) initiate this cluster?\n"
+            f"For each: what data arrives and through what mechanism "
+            f"(API endpoint, screen, JCL step, file drop, event, etc.).\n\n"
+            f"4. DATA CONTRACTS\n"
+            f"For each entry point: what input fields/formats are expected?\n"
+            f"What does the cluster output (data, files, database writes, messages, screens)?\n\n"
+            f"5. EXTERNAL DEPENDENCIES\n"
+            f"What does this cluster call or read from OUTSIDE itself?\n"
+            f"(databases, files, APIs, other programs, external services — use exact names)\n\n"
+            f"Rules: use ONLY names that appear in the source material above. "
+            f"No business narrative — technical specifics and exact identifiers only. "
+            f"If a detail is uncertain, say so."
+        )
+        try:
+            return _llm_call_with_retry(self.llm.query, prompt, max_tokens=3000)
+        except Exception:
+            return ""
 
     # ------------------------------------------------------------------
     # Pure-doc cluster

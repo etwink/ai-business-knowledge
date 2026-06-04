@@ -70,6 +70,7 @@ class ConversationalAgent:
         gap_analysis: GapAnalysis,
         knowledge_base=None,
         audience_note: str = "",
+        response_mode: str = "standard",
     ):
         self.llm = AzureLLMClient()
         self.analyses = analyses
@@ -77,6 +78,7 @@ class ConversationalAgent:
         self.gap_analysis = gap_analysis
         self.knowledge_base = knowledge_base
         self._audience_note = audience_note
+        self._response_mode = response_mode
         self._system_prompt = (
             _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
             if audience_note else _SYSTEM_PROMPT_BASE
@@ -279,13 +281,17 @@ class ConversationalAgent:
         else:
             gaps_list = "  All gaps have been addressed."
 
+        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS
+        mode_block = RESPONSE_MODE_INSTRUCTIONS.get(self._response_mode, "")
+
         return (
             f"[CONTEXT — do not read this block to the user]\n"
             f"Documents analyzed: {doc_names}\n"
             f"Open gaps ({remaining_count} remaining — resolve any that the user's response addresses):\n"
             f"{gaps_list}\n"
             f"Relevant document excerpts:\n{doc_excerpts}\n"
-            f"[END CONTEXT]"
+            + (f"Response format for your replies to the user:\n{mode_block}\n" if mode_block else "")
+            + f"[END CONTEXT]"
         )
 
     def _generate_document_update(

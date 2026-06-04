@@ -30,8 +30,9 @@ from .knowledge_base import KnowledgeBase
 _DEFAULT_PROCESS_DOC_K = 3       # chunks pulled from generated process document per iteration
 _DEFAULT_WORD_K = 3              # chunks pulled from word/doc files per iteration
 _DEFAULT_CODE_K = 2              # chunks pulled from code/other files per iteration
-_DEFAULT_CLUSTER_SUMMARY_K = 2   # cluster summary chunks pulled per iteration
-_DEFAULT_CLUSTER_RAW_K = 5       # raw code chunks fetched per matched cluster (stage 2)
+_DEFAULT_CLUSTER_SUMMARY_K = 2    # process-narrative summary chunks per iteration
+_DEFAULT_CLUSTER_TECHNICAL_K = 2  # technical-map chunks per iteration
+_DEFAULT_CLUSTER_RAW_K = 5        # raw code chunks fetched per matched cluster (stage 2)
 _MAX_ITERATIONS = 3              # max retrieval-filter-check cycles before generating answer
 _CHUNK_PREVIEW_CHARS = 400       # how much of each chunk to show the relevance judge
 
@@ -96,8 +97,10 @@ class RAGAgent:
         word_k: int = _DEFAULT_WORD_K,
         code_k: int = _DEFAULT_CODE_K,
         cluster_summary_k: int = _DEFAULT_CLUSTER_SUMMARY_K,
+        cluster_technical_k: int = _DEFAULT_CLUSTER_TECHNICAL_K,
         cluster_raw_k: int = _DEFAULT_CLUSTER_RAW_K,
         audience_note: str = "",
+        response_mode: str = "standard",
     ):
         from src.llm_integration import AzureLLMClient
         self.kb = knowledge_base
@@ -105,10 +108,12 @@ class RAGAgent:
         self._word_k = word_k
         self._code_k = code_k
         self._cluster_summary_k = cluster_summary_k
+        self._cluster_technical_k = cluster_technical_k
         self._cluster_raw_k = cluster_raw_k
         self._llm = AzureLLMClient()
         self._history: list[dict] = []
         self._audience_note = audience_note
+        self._response_mode = response_mode
         self._system_prompt = (
             _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
             if audience_note else _SYSTEM_PROMPT_BASE
@@ -147,20 +152,25 @@ class RAGAgent:
                 word_k=self._word_k,
                 code_k=self._code_k,
                 cluster_summary_k=self._cluster_summary_k,
+                cluster_technical_k=self._cluster_technical_k,
                 exclude_ids=excluded_ids,
                 include_code=include_code,
             )
 
-            # Stage 2: for each cluster summary retrieved, pull raw code from that cluster
+            # Stage 2: expand any cluster summary OR technical-map chunk into raw code
+            cluster_index_chunks = (
+                tiered.get("cluster_summary", []) + tiered.get("cluster_technical", [])
+            )
             cluster_raw = self._expand_cluster_summaries(
                 enriched_query,
-                tiered.get("cluster_summary", []),
+                cluster_index_chunks,
                 expanded_cluster_ids,
                 excluded_ids,
             )
 
             new_chunks = (
                 tiered["cluster_summary"]
+                + tiered["cluster_technical"]
                 + tiered["process_doc"]
                 + tiered["word"]
                 + tiered["code"]
@@ -316,6 +326,8 @@ class RAGAgent:
     # ------------------------------------------------------------------
 
     def _generate_answer(self, user_message: str, chunks: list[dict]) -> str:
+        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS
+
         context_parts = []
         for i, c in enumerate(chunks, 1):
             score_pct = int(c["score"] * 100)
@@ -328,15 +340,10 @@ class RAGAgent:
         )
 
         history_text = self._format_history()
+        mode_instruction = RESPONSE_MODE_INSTRUCTIONS.get(self._response_mode, "")
 
         audience_instruction = (
-            f"\n\nAUDIENCE: {self._audience_note}\n"
-            f"Tailor your answer specifically for this audience. Focus only on what is "
-            f"directly relevant and actionable for them. If the context contains technical "
-            f"backend details that are outside their scope, either translate them into "
-            f"terms this audience understands or omit them entirely. Frame every step, "
-            f"decision, and explanation from the perspective of what this audience needs "
-            f"to know or do — not how the system is implemented internally."
+            f"\n\n{self._audience_note}"
             if self._audience_note else ""
         )
 
@@ -346,13 +353,15 @@ class RAGAgent:
             f"{'Conversation so far:' + chr(10) + history_text + chr(10) if history_text else ''}"
             f"User question: {user_message}"
             f"{audience_instruction}\n\n"
+            f"{mode_instruction}\n\n"
             f"Answer based on the context above. "
             f"Cite source documents by number (e.g. [1], [2]) where relevant. "
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
+        max_tokens = {"summary": 800, "guide": 4000}.get(self._response_mode, 3000)
         return self._llm.query(
-            prompt, system_message=self._system_prompt, max_tokens=3000
+            prompt, system_message=self._system_prompt, max_tokens=max_tokens
         )
 
     # ------------------------------------------------------------------

@@ -150,8 +150,13 @@ class ProcessDocumentBuilder:
         exhausted before the final sections are written.
         """
         summaries = [cs.summary for cs in cluster_summaries]
+        tech_summaries = [
+            getattr(cs, "technical_summary", "") for cs in cluster_summaries
+        ]
         return self._build_section_by_section(
-            lambda key: PromptBuilder.build_section_prompt_from_clusters(key, summaries, context_block),
+            lambda key: PromptBuilder.build_section_prompt_from_clusters(
+                key, summaries, context_block, tech_summaries=tech_summaries
+            ),
             progress_callback,
         )
 

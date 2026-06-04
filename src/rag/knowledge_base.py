@@ -183,15 +183,22 @@ class KnowledgeBase:
         for cs in cluster_summaries:
             cid = getattr(cs, "cluster_id", None) or str(cs)
             cname = getattr(cs, "cluster_name", cid)
+
             synthesis = getattr(cs, "summary", "") or ""
-            if not synthesis:
-                continue
-            source = f"[Cluster Summary — {cname}]"
-            text_chunks = _chunk_text(synthesis, source_file=source, file_type="cluster_summary", tier=1)
-            for c in text_chunks:
-                c.cluster_id = cid
-                c.cluster_name = cname
-            new_chunks.extend(text_chunks)
+            if synthesis:
+                source = f"[Cluster Summary — {cname}]"
+                for c in _chunk_text(synthesis, source_file=source, file_type="cluster_summary", tier=1):
+                    c.cluster_id = cid
+                    c.cluster_name = cname
+                    new_chunks.append(c)
+
+            tech = getattr(cs, "technical_summary", "") or ""
+            if tech:
+                source_t = f"[Cluster Technical Map — {cname}]"
+                for c in _chunk_text(tech, source_file=source_t, file_type="cluster_technical", tier=1):
+                    c.cluster_id = cid
+                    c.cluster_name = cname
+                    new_chunks.append(c)
 
         if not new_chunks:
             return 0
@@ -282,25 +289,31 @@ class KnowledgeBase:
         word_k: int = 3,
         code_k: int = 2,
         cluster_summary_k: int = 2,
+        cluster_technical_k: int = 2,
         exclude_ids: set[int] | None = None,
         include_code: bool = True,
     ) -> dict[str, list[dict]]:
         """
         Pull top-k chunks separately from each tier, respecting per-query exclusions.
 
-        Returns {"process_doc": [...], "word": [...], "code": [...], "cluster_summary": [...]}.
+        Returns {"cluster_summary": [...], "cluster_technical": [...],
+                 "process_doc": [...], "word": [...], "code": [...]}.
         Each chunk dict includes "_array_idx" (position in the internal chunk array)
         so callers can track which chunks to exclude in subsequent calls.
 
-        Tier / file_type mapping:
-          file_type "cluster_summary" → cluster_summary  (plain-English cluster descriptions)
-          tier 2                      → process_doc       (generated process document sections)
-          tier 1 (non-summary)        → word              (.doc / .docx business documents)
-          tier 3                      → code              (everything else: COBOL, Python, Excel…)
+        file_type / tier routing:
+          "cluster_summary"  → cluster_summary   (process/business narrative)
+          "cluster_technical"→ cluster_technical  (component interaction map)
+          tier 2             → process_doc        (generated process document)
+          tier 1 (other)     → word               (.doc / .docx business documents)
+          tier 3             → code               (COBOL, Python, Excel, etc.)
         """
         self._ensure_loaded()
         if self._embeddings is None or not self._chunks:
-            return {"cluster_summary": [], "process_doc": [], "word": [], "code": []}
+            return {
+                "cluster_summary": [], "cluster_technical": [],
+                "process_doc": [], "word": [], "code": [],
+            }
 
         model = _get_model()
         q_emb = model.encode([query], normalize_embeddings=True)[0].astype(np.float32)
@@ -309,13 +322,16 @@ class KnowledgeBase:
         excluded = exclude_ids or set()
 
         tier_indices: dict[str, list[int]] = {
-            "cluster_summary": [], "process_doc": [], "word": [], "code": []
+            "cluster_summary": [], "cluster_technical": [],
+            "process_doc": [], "word": [], "code": [],
         }
         for i, chunk in enumerate(self._chunks):
             if i in excluded:
                 continue
             if chunk.file_type == "cluster_summary":
                 tier_indices["cluster_summary"].append(i)
+            elif chunk.file_type == "cluster_technical":
+                tier_indices["cluster_technical"].append(i)
             elif chunk.tier == 2:
                 tier_indices["process_doc"].append(i)
             elif chunk.tier == 1:
@@ -325,13 +341,15 @@ class KnowledgeBase:
 
         limits = {
             "cluster_summary": cluster_summary_k,
+            "cluster_technical": cluster_technical_k,
             "process_doc": process_doc_k,
             "word": word_k,
             "code": code_k if include_code else 0,
         }
 
         results: dict[str, list[dict]] = {
-            "cluster_summary": [], "process_doc": [], "word": [], "code": []
+            "cluster_summary": [], "cluster_technical": [],
+            "process_doc": [], "word": [], "code": [],
         }
         for group, indices in tier_indices.items():
             k = limits[group]

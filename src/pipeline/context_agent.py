@@ -30,37 +30,106 @@ AUDIENCE_LABELS: dict[str, str] = {
 # the intended reader.  Keyed by the same keys as AUDIENCE_LABELS.
 AUDIENCE_NOTES: dict[str, str] = {
     "new_employee": (
-        "IMPORTANT — Audience: This document will be read by people who have NO prior "
-        "knowledge of these systems, processes, or business domain. Write as if handing "
-        "this to a new employee on their first day. Never assume the reader already knows "
-        "what a component does or why it exists. Every time you mention a subprocess, "
-        "program, file, system, team, or business concept, briefly explain: (1) what it is, "
-        "(2) what it does, (3) who owns it, and (4) why it exists. Avoid acronyms without "
-        "first spelling them out. Write in plain language."
+        "IMPORTANT — Audience: People on their very first day — zero prior knowledge of "
+        "these systems, processes, or business domain.\n\n"
+        "WRITING RULES:\n"
+        "• Define EVERY term on first use — never assume the reader knows acronyms, system "
+        "names, or internal jargon\n"
+        "• Spell out every abbreviation in full before using the short form\n"
+        "• After naming any system, team, or tool, add a brief parenthetical explaining "
+        "what it does and who owns it\n"
+        "• Use plain, conversational language — avoid formal or bureaucratic phrasing\n"
+        "• If a step requires prior knowledge to execute, say so and point toward where "
+        "that knowledge can be found\n"
+        "• Organize content so it can be followed chronologically by someone doing it for "
+        "the very first time"
     ),
     "business": (
-        "IMPORTANT — Audience: This document will be read by business executives and "
-        "stakeholders who understand company operations but not technical implementation "
-        "details. Focus on business purpose, outcomes, risks, and decisions. Avoid "
-        "low-level implementation specifics (file formats, code logic, protocols) unless "
-        "directly relevant to a business decision. Use business terminology, not technical "
-        "jargon. When you must mention a technical system, describe only what it does in "
-        "business terms."
+        "IMPORTANT — Audience: Business executives and stakeholders who understand "
+        "operations but NOT technical implementation.\n\n"
+        "VOCABULARY ENFORCEMENT — apply these rules to every sentence:\n"
+        "• NEVER use these terms: COBOL, JCL, copybook, subroutine, mainframe, stored "
+        "procedure, PIC clause, WORKING-STORAGE, hex, binary, API, endpoint, schema, "
+        "payload, parsing, runtime, compile, regex, SQL, dataset (technical sense), "
+        "file extensions like .CBL .CPY .JCL, program names that are not business terms\n"
+        "• TRANSLATE automatically: 'batch job' → 'automated process', 'COBOL program' → "
+        "'automated system process', 'copybook' → 'shared data template', 'API call' → "
+        "'connection to [system name]', 'stored procedure' → 'automated database step', "
+        "'subroutine' → 'sub-process', 'schema' → 'data layout'\n"
+        "• If a technical file or program name must appear, write what it DOES instead of "
+        "its technical name\n"
+        "• FOCUS on: business outcomes, who is affected, decisions required, risks, "
+        "timelines, and costs\n"
+        "• OMIT: technical specifications, code logic, file layouts, system internals"
     ),
     "developer": (
-        "IMPORTANT — Audience: This document will be read by experienced software "
-        "developers and technical architects. Use precise technical terminology freely. "
-        "Focus on implementation details: data structures, interfaces, APIs, file formats, "
-        "processing logic, error handling, and system dependencies. Include specific "
-        "program names, file names, and technical specifications. Skip high-level business "
-        "context unless it directly influences a technical design decision."
+        "IMPORTANT — Audience: Experienced software developers and technical architects.\n\n"
+        "WRITING RULES:\n"
+        "• Technical terminology is expected and appropriate — COBOL, JCL, copybooks, "
+        "APIs, schemas, file formats, etc.\n"
+        "• Include specific program names, file names, and identifiers where known\n"
+        "• Focus on implementation: data structures, interfaces, processing logic, error "
+        "handling, and dependencies\n"
+        "• Skip high-level business context unless it directly influences a technical "
+        "design decision\n"
+        "• Be terse and precise — prefer code references and exact values over narrative\n"
+        "• When uncertain, say so explicitly rather than hedging"
     ),
     "expert": (
-        "IMPORTANT — Audience: This document will be read by subject matter experts who "
-        "are deeply familiar with the business domain and existing systems. Assume full "
-        "knowledge of all terminology, acronyms, and standard processes. Focus on nuances, "
-        "edge cases, cross-system interactions, and exceptions to standard rules. Skip "
-        "basic definitions and standard process descriptions."
+        "IMPORTANT — Audience: Subject matter experts deeply familiar with this business "
+        "domain and its systems.\n\n"
+        "WRITING RULES:\n"
+        "• Assume full knowledge of all terminology, acronyms, and standard processes — "
+        "skip basic definitions\n"
+        "• Focus on nuances, edge cases, exceptions, cross-system interactions, and "
+        "non-obvious dependencies\n"
+        "• Be concise — bullet points and direct statements over narrative prose\n"
+        "• Highlight anything that deviates from expected patterns or documented behavior\n"
+        "• Include specific identifiers, thresholds, and values wherever they appear in "
+        "the source material"
+    ),
+}
+
+# Response mode labels shown in the UI mode selector.
+RESPONSE_MODE_LABELS: dict[str, str] = {
+    "summary": "Quick Summary",
+    "standard": "Standard",
+    "guide": "Step-by-Step Guide",
+}
+
+# Format/length instructions appended to answer-generation prompts.
+RESPONSE_MODE_INSTRUCTIONS: dict[str, str] = {
+    "summary": (
+        "RESPONSE FORMAT — Quick Summary:\n"
+        "• Length: 150–250 words MAXIMUM — shorter is better\n"
+        "• Use plain paragraphs or a single tight bullet list (5–7 points max)\n"
+        "• Cover WHAT and WHY only — omit HOW it is technically implemented\n"
+        "• No section headers, no sub-bullets, no tables\n"
+        "• End with one clear takeaway sentence"
+    ),
+    "standard": (
+        "RESPONSE FORMAT — Standard:\n"
+        "• Length: Cover the topic fully, but stop when done — no padding or repetition\n"
+        "• Use headers and bullet points only where they genuinely improve readability\n"
+        "• Cite source documents where relevant\n"
+        "• Aim for completeness, not brevity and not exhaustiveness"
+    ),
+    "guide": (
+        "RESPONSE FORMAT — Step-by-Step Guide:\n"
+        "• Number every user action — one discrete action per step, never combine steps\n"
+        "• For EACH step include three things:\n"
+        "  1. WHERE — the screen name, menu path, or system to navigate to\n"
+        "  2. WHAT — exact field names, values to enter, or buttons to click\n"
+        "  3. RESULT — what the user should see or receive after completing the step\n"
+        "• If the source documents contain specific screen names, system commands, or "
+        "field values — quote them EXACTLY as written\n"
+        "• If exact operational details are NOT available in the source documents, flag "
+        "it inline: '(Note: exact steps for [X] are not in the available documentation "
+        "— consult the system runbook or IT support.)'\n"
+        "• Use imperative verbs: Click, Enter, Select, Navigate to, Verify\n"
+        "• No narrative prose — every sentence is a concrete user action\n"
+        "• End with a 'Common Issues' section listing known failure points and resolutions "
+        "if the source materials mention any"
     ),
 }
 

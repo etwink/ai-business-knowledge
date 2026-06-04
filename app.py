@@ -21,7 +21,7 @@ from src.analyzers import (
 from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
-from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES
+from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, RESPONSE_MODE_LABELS
 from src.rag import KnowledgeBase, RAGAgent
 import config
 
@@ -67,6 +67,9 @@ def initialize_session():
         st.session_state.doc_audience = "new_employee"
     if 'custom_audience_note' not in st.session_state:
         st.session_state.custom_audience_note = ""
+    # Response mode — controls format and depth of chat answers
+    if 'response_mode' not in st.session_state:
+        st.session_state.response_mode = "standard"
     # Staging keys — hold unsaved selections until the user clicks Save Audience
     if '_audience_staging' not in st.session_state:
         st.session_state._audience_staging = st.session_state.doc_audience
@@ -1089,6 +1092,7 @@ def render_chat_page():
                 gap_analysis=st.session_state.gap_analysis,
                 knowledge_base=_kb,
                 audience_note=AUDIENCE_NOTES.get(_audience, ""),
+                response_mode=st.session_state.get("response_mode", "standard"),
             )
             opening = agent.get_opening_message()
             st.session_state.chat_agent = agent
@@ -1173,12 +1177,31 @@ def render_chat_page():
 
 
 def _render_chat_column(agent) -> None:
-    """Reset button, chat history, document updates sidebar, and chat input."""
-    if st.button("🔄 Reset Chat"):
-        st.session_state.chat_agent = None
-        st.session_state.chat_messages = []
-        st.session_state.document_updates = {}
-        st.rerun()
+    """Reset button, mode selector, chat history, document updates sidebar, and chat input."""
+    _gap_mode_col, _gap_reset_col = st.columns([3, 1])
+    with _gap_mode_col:
+        _gap_current_mode = st.session_state.get("response_mode", "standard")
+        st.radio(
+            "Response mode",
+            options=list(RESPONSE_MODE_LABELS.keys()),
+            format_func=lambda k: RESPONSE_MODE_LABELS[k],
+            index=list(RESPONSE_MODE_LABELS.keys()).index(_gap_current_mode),
+            horizontal=True,
+            key="response_mode",
+            help=(
+                "Quick Summary — brief overview only  |  "
+                "Standard — balanced detail  |  "
+                "Step-by-Step Guide — numbered actions with exact screen/field details"
+            ),
+        )
+    # Sync mode to live agent without reinitialising
+    agent._response_mode = st.session_state.get("response_mode", "standard")
+    with _gap_reset_col:
+        if st.button("🔄 Reset Chat"):
+            st.session_state.chat_agent = None
+            st.session_state.chat_messages = []
+            st.session_state.document_updates = {}
+            st.rerun()
 
     st.divider()
 
@@ -1186,6 +1209,48 @@ def _render_chat_column(agent) -> None:
     for msg in st.session_state.chat_messages:
         with st.chat_message(msg["role"]):
             st.write(msg["content"])
+
+    # ── Download section ──────────────────────────────────────────────────────
+    _gap_msgs = st.session_state.chat_messages
+    _gap_last = next((m for m in reversed(_gap_msgs) if m["role"] == "assistant"), None)
+    if _gap_last:
+        with st.expander("📥 Download"):
+            st.caption("Latest response")
+            _gd1, _gd2 = st.columns(2)
+            with _gd1:
+                st.download_button(
+                    "📄 Word",
+                    data=_chat_to_word_bytes([_gap_last], "Gap Chat Response"),
+                    file_name="gap_chat_response.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="gap_dl_last_word",
+                )
+            with _gd2:
+                st.download_button(
+                    "📝 Text",
+                    data=_chat_to_text([_gap_last], "Gap Chat Response"),
+                    file_name="gap_chat_response.txt",
+                    mime="text/plain",
+                    key="gap_dl_last_txt",
+                )
+            st.caption("Full conversation")
+            _gd3, _gd4 = st.columns(2)
+            with _gd3:
+                st.download_button(
+                    "📄 Word",
+                    data=_chat_to_word_bytes(_gap_msgs, "Gap Chat Conversation"),
+                    file_name="gap_chat_conversation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="gap_dl_full_word",
+                )
+            with _gd4:
+                st.download_button(
+                    "📝 Text",
+                    data=_chat_to_text(_gap_msgs, "Gap Chat Conversation"),
+                    file_name="gap_chat_conversation.txt",
+                    mime="text/plain",
+                    key="gap_dl_full_txt",
+                )
 
     # ── Document updates sidebar ──────────────────────────────────────────────
     if st.session_state.document_updates:
@@ -1319,6 +1384,44 @@ def _mermaid_to_png(mermaid_code: str) -> bytes | None:
     except Exception:
         pass
     return None
+
+
+def _chat_to_text(messages: list[dict], title: str = "Chat Conversation") -> str:
+    """Render a list of chat messages as plain text."""
+    lines = [title, "=" * len(title), ""]
+    for msg in messages:
+        prefix = "You" if msg["role"] == "user" else "Assistant"
+        lines.append(f"{prefix}:")
+        lines.append(msg["content"])
+        lines.append("")
+    return "\n".join(lines)
+
+
+def _chat_to_word_bytes(messages: list[dict], title: str = "Chat Conversation") -> bytes:
+    """Render a list of chat messages as a Word document and return raw bytes."""
+    import io
+    from docx import Document as DocxDocument
+    from docx.shared import Pt, RGBColor
+
+    d = DocxDocument()
+    d.add_heading(title, 0)
+
+    for msg in messages:
+        is_user = msg["role"] == "user"
+        label_para = d.add_paragraph()
+        label_run = label_para.add_run("You:" if is_user else "Assistant:")
+        label_run.bold = True
+        label_run.font.size = Pt(11)
+        if is_user:
+            label_run.font.color.rgb = RGBColor(0x1F, 0x77, 0xB4)
+
+        content_para = d.add_paragraph(msg["content"])
+        content_para.paragraph_format.left_indent = Pt(18)
+        d.add_paragraph()  # blank line between messages
+
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
 
 
 def _generate_word_doc(doc) -> bytes:
@@ -1488,7 +1591,9 @@ def render_knowledge_chat_page() -> None:
                 # Initialise agent immediately
                 _audience = st.session_state.get("doc_audience", "new_employee")
                 st.session_state.rag_agent = RAGAgent(
-                    kb, audience_note=AUDIENCE_NOTES.get(_audience, "")
+                    kb,
+                    audience_note=AUDIENCE_NOTES.get(_audience, ""),
+                    response_mode=st.session_state.get("response_mode", "standard"),
                 )
                 st.session_state.rag_messages = []
                 st.rerun()
@@ -1507,11 +1612,16 @@ def render_knowledge_chat_page() -> None:
         _current_audience_note = AUDIENCE_NOTES.get(_audience, "")
 
     _existing_agent = st.session_state.rag_agent
+    _current_mode = st.session_state.get("response_mode", "standard")
     if _existing_agent is None or getattr(_existing_agent, "_audience_note", None) != _current_audience_note:
         proc_doc = st.session_state.get("process_document")
         if _existing_agent is None and proc_doc:
             kb.index_process_document(proc_doc)
-        st.session_state.rag_agent = RAGAgent(kb, audience_note=_current_audience_note)
+        st.session_state.rag_agent = RAGAgent(
+            kb,
+            audience_note=_current_audience_note,
+            response_mode=_current_mode,
+        )
         if _existing_agent is not None:
             # Preserve conversation history when only the audience changed
             st.session_state.rag_agent._history = _existing_agent._history
@@ -1522,6 +1632,8 @@ def render_knowledge_chat_page() -> None:
             )
 
     agent: RAGAgent = st.session_state.rag_agent
+    # Sync mode without reinitialising — it only affects _generate_answer()
+    agent._response_mode = _current_mode
     stats = kb.get_stats()
 
     col1, col2, col3 = st.columns(3)
@@ -1529,18 +1641,34 @@ def render_knowledge_chat_page() -> None:
     col2.metric("Index chunks", stats["chunks"])
     col3.metric("Messages", sum(1 for m in st.session_state.rag_messages if m["role"] == "user"))
 
-    if st.button("🗑️ Clear Conversation"):
-        agent.reset()
-        st.session_state.rag_messages = []
-        st.rerun()
-
-    if st.button("🔄 Rebuild Knowledge Base"):
-        import shutil
-        if kb_dir.exists():
-            shutil.rmtree(kb_dir)
-        st.session_state.rag_agent = None
-        st.session_state.rag_messages = []
-        st.rerun()
+    _mode_col, _clear_col, _rebuild_col = st.columns([3, 1, 1])
+    with _mode_col:
+        st.radio(
+            "Response mode",
+            options=list(RESPONSE_MODE_LABELS.keys()),
+            format_func=lambda k: RESPONSE_MODE_LABELS[k],
+            index=list(RESPONSE_MODE_LABELS.keys()).index(_current_mode),
+            horizontal=True,
+            key="response_mode",
+            help=(
+                "Quick Summary — brief overview only  |  "
+                "Standard — balanced detail  |  "
+                "Step-by-Step Guide — numbered actions with exact screen/field details"
+            ),
+        )
+    with _clear_col:
+        if st.button("🗑️ Clear Conversation"):
+            agent.reset()
+            st.session_state.rag_messages = []
+            st.rerun()
+    with _rebuild_col:
+        if st.button("🔄 Rebuild KB"):
+            import shutil
+            if kb_dir.exists():
+                shutil.rmtree(kb_dir)
+            st.session_state.rag_agent = None
+            st.session_state.rag_messages = []
+            st.rerun()
 
     st.divider()
 
@@ -1558,6 +1686,50 @@ def render_knowledge_chat_page() -> None:
                             f"**{src['source_file']}** — relevance {score_pct}%\n\n"
                             f"> {src['text'][:300]}{'…' if len(src['text']) > 300 else ''}"
                         )
+
+    # ── Download section ───────────────────────────────────────────────
+    _rag_msgs = st.session_state.rag_messages
+    _last_assistant = next(
+        (m for m in reversed(_rag_msgs) if m["role"] == "assistant"), None
+    )
+    if _last_assistant:
+        with st.expander("📥 Download"):
+            st.caption("Latest response")
+            _dl1, _dl2 = st.columns(2)
+            with _dl1:
+                st.download_button(
+                    "📄 Word",
+                    data=_chat_to_word_bytes([_last_assistant], "Knowledge Chat Response"),
+                    file_name="knowledge_chat_response.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="rag_dl_last_word",
+                )
+            with _dl2:
+                st.download_button(
+                    "📝 Text",
+                    data=_chat_to_text([_last_assistant], "Knowledge Chat Response"),
+                    file_name="knowledge_chat_response.txt",
+                    mime="text/plain",
+                    key="rag_dl_last_txt",
+                )
+            st.caption("Full conversation")
+            _dl3, _dl4 = st.columns(2)
+            with _dl3:
+                st.download_button(
+                    "📄 Word",
+                    data=_chat_to_word_bytes(_rag_msgs, "Knowledge Chat Conversation"),
+                    file_name="knowledge_chat_conversation.docx",
+                    mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+                    key="rag_dl_full_word",
+                )
+            with _dl4:
+                st.download_button(
+                    "📝 Text",
+                    data=_chat_to_text(_rag_msgs, "Knowledge Chat Conversation"),
+                    file_name="knowledge_chat_conversation.txt",
+                    mime="text/plain",
+                    key="rag_dl_full_txt",
+                )
 
     # ── Input ──────────────────────────────────────────────────────────
     if user_input := st.chat_input("Ask anything about the process or documents…"):

@@ -417,9 +417,24 @@ Process Document:
         ),
     }
 
+    # Appended to every section prompt to prevent the LLM from inventing terminology.
+    _LINGO_CONSTRAINT = (
+        "CRITICAL CONSTRAINT: Use ONLY names, terms, acronyms, and system identifiers "
+        "that appear verbatim in the provided source summaries above. "
+        "Do NOT coin new umbrella terms, architectural labels, or collective names for "
+        "groups of components (e.g. do not write 'the Orchestration Layer' if no source "
+        "calls it that). If you need to refer to a group of components, list their actual "
+        "names. If a concept lacks a name in the source material, describe it in plain "
+        "words without naming it."
+    )
+
     @classmethod
     def build_section_prompt_from_clusters(
-        cls, section_key: str, cluster_summaries: list[str], context_block: str = ""
+        cls,
+        section_key: str,
+        cluster_summaries: list[str],
+        context_block: str = "",
+        tech_summaries: list[str] | None = None,
     ) -> str:
         """Build a prompt for a single process document section using cluster summaries."""
         combined = "\n\n".join(
@@ -428,26 +443,41 @@ Process Document:
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""
 
+        tech_block = ""
+        if tech_summaries:
+            tech_combined = "\n\n".join(
+                f"--- Technical Map {i+1} ---\n{s}"
+                for i, s in enumerate(tech_summaries)
+                if s
+            )
+            if tech_combined:
+                tech_block = (
+                    f"\nTechnical interaction maps (component names and call chains "
+                    f"— use these for accurate identifiers, do not use them as the "
+                    f"basis for the narrative):\n{tech_combined}\n"
+                )
+
         if section_key == "process_flow_diagram":
             return (
                 f"You are generating a process flow diagram for a business process.\n"
                 f"{context_part}\n"
-                f"Cluster Summaries:\n{combined}\n\n"
+                f"Cluster Summaries:\n{combined}\n"
+                f"{tech_block}\n"
                 f"{instruction}"
             )
 
         section_label = section_key.replace("_", " ").upper()
-        # When a context_block is provided it already contains the audience note,
-        # so suppress the hardcoded _AUDIENCE_NOTE to avoid duplication.
         audience_instruction = cls._AUDIENCE_NOTE if not context_block else ""
         return (
             f"You are writing one section of a business process document.\n"
             f"{audience_instruction}\n"
             f"{context_part}\n"
-            f"Below are summaries of all subsystems (COBOL programs and business documents).\n\n"
-            f"Cluster Summaries:\n{combined}\n\n"
+            f"Below are summaries of all subsystems (code programs and business documents).\n\n"
+            f"Cluster Summaries:\n{combined}\n"
+            f"{tech_block}\n"
             f"Write ONLY the {section_label} section of the process document.\n"
             f"{instruction}\n"
+            f"{cls._LINGO_CONSTRAINT}\n"
             f"Do not include any other section headers or content. "
             f"Output plain prose and/or bullet lists — no markdown fences."
         )
@@ -479,6 +509,7 @@ Process Document:
             f"Document Summaries:\n{combined}\n\n"
             f"Write ONLY the {section_label} section of the process document.\n"
             f"{instruction}\n"
+            f"{cls._LINGO_CONSTRAINT}\n"
             f"Do not include any other section headers or content. "
             f"Output plain prose and/or bullet lists — no markdown fences."
         )
