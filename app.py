@@ -1684,7 +1684,7 @@ def render_knowledge_chat_page() -> None:
                         score_pct = int(src["score"] * 100)
                         st.markdown(
                             f"**{src['source_file']}** — relevance {score_pct}%\n\n"
-                            f"> {src['text'][:300]}{'…' if len(src['text']) > 300 else ''}"
+                            f"> {src['text'][:1000]}{'…' if len(src['text']) > 1000 else ''}"
                         )
 
     # ── Download section ───────────────────────────────────────────────

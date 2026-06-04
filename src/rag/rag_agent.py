@@ -359,7 +359,7 @@ class RAGAgent:
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
-        max_tokens = {"summary": 800, "guide": 4000}.get(self._response_mode, 3000)
+        max_tokens = {"summary": 2000, "guide": 50000}.get(self._response_mode, 10000)
         return self._llm.query(
             prompt, system_message=self._system_prompt, max_tokens=max_tokens
         )
@@ -394,7 +394,7 @@ class RAGAgent:
         )
         try:
             enriched = self._llm.query(
-                prompt, system_message=_ENRICH_SYSTEM, max_tokens=200
+                prompt, system_message=_ENRICH_SYSTEM, max_tokens=1000
             )
             return enriched.strip() or user_message
         except Exception:
@@ -407,6 +407,6 @@ class RAGAgent:
         lines = []
         for m in recent:
             role = m["role"].upper()
-            content = m["content"][:300] + ("…" if len(m["content"]) > 300 else "")
+            content = m["content"][:1000] + ("…" if len(m["content"]) > 1000 else "")
             lines.append(f"{role}: {content}")
         return "\n".join(lines)
