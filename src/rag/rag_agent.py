@@ -44,7 +44,18 @@ _SYSTEM_PROMPT_BASE = (
     "You are a knowledgeable assistant helping users understand business processes, "
     "systems, and procedures. Answer questions using ONLY the provided context excerpts. "
     "If the context does not contain enough information to answer fully, say so explicitly "
-    "rather than guessing. Always state which source document(s) your answer draws from."
+    "rather than guessing. Always state which source document(s) your answer draws from. "
+    "Format ALL responses using Markdown: use ## for section headers, ### for sub-headers, "
+    "**bold** for key terms and field names, numbered lists (1. 2. 3.) for sequential steps, "
+    "and - bullets for non-sequential items."
+)
+
+_CONVERSATIONAL_ROUTING_SYSTEM = (
+    "You are a query routing classifier. "
+    "Decide whether a new user message requires searching a document database for new information, "
+    "or whether it can be answered entirely from the existing conversation history "
+    "(e.g. reformatting, rephrasing, clarifying, summarizing what was already said). "
+    "Respond with exactly one word: HISTORY or LOOKUP"
 )
 
 _ENRICH_SYSTEM = (
@@ -101,6 +112,7 @@ class RAGAgent:
         cluster_raw_k: int = _DEFAULT_CLUSTER_RAW_K,
         audience_note: str = "",
         response_mode: str = "standard",
+        detail_level: str = "standard",
     ):
         from src.llm_integration import AzureLLMClient
         self.kb = knowledge_base
@@ -114,6 +126,7 @@ class RAGAgent:
         self._history: list[dict] = []
         self._audience_note = audience_note
         self._response_mode = response_mode
+        self._detail_level = detail_level
         self._system_prompt = (
             _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
             if audience_note else _SYSTEM_PROMPT_BASE
@@ -129,7 +142,17 @@ class RAGAgent:
 
         accepted_chunks: the final filtered set used to generate the answer.
         enriched_query:  the rewritten query used for vector search.
+
+        If the message is a conversational follow-up (reformatting, rephrasing, etc.)
+        that can be answered from history alone, RAG retrieval is skipped entirely.
         """
+        # Short-circuit: conversational follow-ups don't need new retrieval
+        if self._history and self._is_conversational_followup(user_message):
+            answer = self._answer_from_history(user_message)
+            self._history.append({"role": "user", "content": user_message})
+            self._history.append({"role": "assistant", "content": answer})
+            return answer, [], user_message
+
         enriched_query = self._enrich_query(user_message)
 
         excluded_ids: set[int] = set()   # per-query exclusion set (not persisted)
@@ -146,12 +169,20 @@ class RAGAgent:
                 include_code = self._check_needs_code(enriched_query, accepted_chunks)
                 needs_code_checked = True
 
+            # Guide mode: boost Word/procedure docs, pull back on high-level summaries
+            _word_k = self._word_k * 2 if self._response_mode == "guide" else self._word_k
+            _cluster_summary_k = (
+                max(1, self._cluster_summary_k - 1)
+                if self._response_mode == "guide"
+                else self._cluster_summary_k
+            )
+
             tiered = self.kb.search_tiered(
                 enriched_query,
                 process_doc_k=self._process_doc_k,
-                word_k=self._word_k,
+                word_k=_word_k,
                 code_k=self._code_k,
-                cluster_summary_k=self._cluster_summary_k,
+                cluster_summary_k=_cluster_summary_k,
                 cluster_technical_k=self._cluster_technical_k,
                 exclude_ids=excluded_ids,
                 include_code=include_code,
@@ -197,6 +228,62 @@ class RAGAgent:
 
     def reset(self) -> None:
         self._history.clear()
+
+    # ------------------------------------------------------------------
+    # Conversational routing
+    # ------------------------------------------------------------------
+
+    def _is_conversational_followup(self, message: str) -> bool:
+        """
+        Check whether the message can be answered from history alone (no retrieval needed).
+        Catches reformatting, rephrasing, clarification, and summary-of-prior-answer requests.
+        Fails open (returns False → do retrieval) on any error so we never silently drop context.
+        """
+        history_text = self._format_history()
+        prompt = (
+            f"Conversation so far:\n{history_text}\n\n"
+            f"New message: {message}\n\n"
+            "Does this new message require searching a document database for NEW information, "
+            "or can it be answered entirely from the conversation above?\n"
+            "HISTORY examples: 'reformat that', 'show it as a table', 'make it shorter', "
+            "'can you summarize what you just said', 'explain that differently', "
+            "'put that in bullet points', 'what did you mean by X in your last answer'\n"
+            "LOOKUP examples: 'what about X process', 'how does Y work', "
+            "'what are the steps for Z', 'tell me about W'\n"
+            "Respond with exactly one word: HISTORY or LOOKUP"
+        )
+        try:
+            result = self._llm.query(
+                prompt, system_message=_CONVERSATIONAL_ROUTING_SYSTEM, max_tokens=10
+            )
+            return result.strip().upper().startswith("H")
+        except Exception:
+            return False
+
+    def _answer_from_history(self, user_message: str) -> str:
+        """Generate an answer from conversation history alone, skipping retrieval."""
+        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS, DETAIL_LEVEL_INSTRUCTIONS
+
+        history_text = self._format_history()
+        mode_instruction = RESPONSE_MODE_INSTRUCTIONS.get(self._response_mode, "")
+        detail_instruction = DETAIL_LEVEL_INSTRUCTIONS.get(self._detail_level, "")
+        combined_instructions = "\n\n".join(
+            part for part in [mode_instruction, detail_instruction] if part
+        )
+        audience_instruction = f"\n\n{self._audience_note}" if self._audience_note else ""
+
+        prompt = (
+            f"Conversation so far:\n{history_text}\n\n"
+            f"User message: {user_message}"
+            f"{audience_instruction}\n\n"
+            f"{combined_instructions}\n\n"
+            "Respond based on the conversation above. No need to cite sources — "
+            "this is a follow-up to information already provided."
+        )
+        max_tokens = {"summary": 3000, "guide": 50000}.get(self._response_mode, 15000)
+        return self._llm.query(
+            prompt, system_message=self._system_prompt, max_tokens=max_tokens
+        )
 
     # ------------------------------------------------------------------
     # Retrieval helpers
@@ -326,7 +413,7 @@ class RAGAgent:
     # ------------------------------------------------------------------
 
     def _generate_answer(self, user_message: str, chunks: list[dict]) -> str:
-        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS
+        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS, DETAIL_LEVEL_INSTRUCTIONS
 
         context_parts = []
         for i, c in enumerate(chunks, 1):
@@ -341,10 +428,15 @@ class RAGAgent:
 
         history_text = self._format_history()
         mode_instruction = RESPONSE_MODE_INSTRUCTIONS.get(self._response_mode, "")
+        detail_instruction = DETAIL_LEVEL_INSTRUCTIONS.get(self._detail_level, "")
 
         audience_instruction = (
             f"\n\n{self._audience_note}"
             if self._audience_note else ""
+        )
+
+        combined_instructions = "\n\n".join(
+            part for part in [mode_instruction, detail_instruction] if part
         )
 
         prompt = (
@@ -353,7 +445,7 @@ class RAGAgent:
             f"{'Conversation so far:' + chr(10) + history_text + chr(10) if history_text else ''}"
             f"User question: {user_message}"
             f"{audience_instruction}\n\n"
-            f"{mode_instruction}\n\n"
+            f"{combined_instructions}\n\n"
             f"Answer based on the context above. "
             f"Cite source documents by number (e.g. [1], [2]) where relevant. "
             f"If the answer spans multiple sources, integrate them cohesively."
@@ -383,10 +475,19 @@ class RAGAgent:
             f"workflows over backend technical implementation details).\n\n"
             if self._audience_note else ""
         )
+        guide_section = (
+            "This is a step-by-step guide request. Enrich the query to find:\n"
+            "- Specific screen names, system commands, and menu paths\n"
+            "- Field names, valid values, and data entry instructions\n"
+            "- Procedure documents, job aids, SOPs, and user manuals\n"
+            "- Navigation instructions and operational how-to content\n\n"
+            if self._response_mode == "guide" else ""
+        )
 
         prompt = (
             f"{history_section}"
             f"{audience_section}"
+            f"{guide_section}"
             f"User question: {user_message}\n\n"
             f"Rewrite this into a specific, detailed search query for a business process "
             f"knowledge base. Expand abbreviations, add relevant domain terms, and make "

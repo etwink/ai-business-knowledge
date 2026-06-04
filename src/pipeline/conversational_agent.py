@@ -71,6 +71,7 @@ class ConversationalAgent:
         knowledge_base=None,
         audience_note: str = "",
         response_mode: str = "standard",
+        detail_level: str = "standard",
     ):
         self.llm = AzureLLMClient()
         self.analyses = analyses
@@ -79,6 +80,7 @@ class ConversationalAgent:
         self.knowledge_base = knowledge_base
         self._audience_note = audience_note
         self._response_mode = response_mode
+        self._detail_level = detail_level
         self._system_prompt = (
             _SYSTEM_PROMPT_BASE + "\n\n" + audience_note
             if audience_note else _SYSTEM_PROMPT_BASE
@@ -281,8 +283,10 @@ class ConversationalAgent:
         else:
             gaps_list = "  All gaps have been addressed."
 
-        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS
+        from src.pipeline.context_agent import RESPONSE_MODE_INSTRUCTIONS, DETAIL_LEVEL_INSTRUCTIONS
         mode_block = RESPONSE_MODE_INSTRUCTIONS.get(self._response_mode, "")
+        detail_block = DETAIL_LEVEL_INSTRUCTIONS.get(self._detail_level, "")
+        format_block = "\n\n".join(part for part in [mode_block, detail_block] if part)
 
         return (
             f"[CONTEXT — do not read this block to the user]\n"
@@ -290,7 +294,7 @@ class ConversationalAgent:
             f"Open gaps ({remaining_count} remaining — resolve any that the user's response addresses):\n"
             f"{gaps_list}\n"
             f"Relevant document excerpts:\n{doc_excerpts}\n"
-            + (f"Response format for your replies to the user:\n{mode_block}\n" if mode_block else "")
+            + (f"Response format for your replies to the user:\n{format_block}\n" if format_block else "")
             + f"[END CONTEXT]"
         )
 

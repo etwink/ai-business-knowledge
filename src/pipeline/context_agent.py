@@ -97,6 +97,58 @@ RESPONSE_MODE_LABELS: dict[str, str] = {
     "guide": "Step-by-Step Guide",
 }
 
+# Detail level labels shown in the UI detail-level selector.
+DETAIL_LEVEL_LABELS: dict[str, str] = {
+    "overview": "Overview",
+    "standard": "Standard",
+    "detailed": "In-Depth",
+}
+
+# Depth instructions appended to answer-generation prompts alongside response-mode instructions.
+DETAIL_LEVEL_INSTRUCTIONS: dict[str, str] = {
+    "overview": (
+        "DETAIL LEVEL — Overview:\n"
+        "• Describe major phases at a high level — what to do and where, not every keystroke\n"
+        "• Name the system or screen but do not enumerate every individual field or value\n"
+        "• 2–4 bullet points or sentences per major phase is the right granularity\n"
+        "• Suitable for an executive who needs to understand the workflow without executing it"
+    ),
+    "standard": (
+        "DETAIL LEVEL — Standard:\n"
+        "• Name the exact screen, command, or menu path for every step\n"
+        "• Call out the key fields the user must fill in and any important values\n"
+        "• Where source materials include specific codes or values, include them\n"
+        "• FORBIDDEN — never write these vague phrases:\n"
+        "  ✗ 'enter the appropriate data'  →  name the exact field and value\n"
+        "  ✗ 'navigate to the correct screen'  →  name the screen/command and path\n"
+        "  ✗ 'using the system'  →  name the system and the specific action\n"
+        "  ✗ 'fill in the required fields'  →  list the fields by name\n"
+        "• If exact values are not in the source material, write '(value from your records)' "
+        "rather than omitting the field entirely"
+    ),
+    "detailed": (
+        "DETAIL LEVEL — In-Depth:\n"
+        "• Every step must include: exact screen ID or command, exact field name/number, "
+        "exact value to enter or select, and what the system displays after the action\n"
+        "• Quote field labels and valid values verbatim from the source material\n"
+        "• Use keypress-level imperative language: 'Type X', 'Press Enter', 'Tab to field Y', "
+        "'Select option Z from the dropdown'\n"
+        "• ABSOLUTELY FORBIDDEN — scan for and replace every instance before finalizing:\n"
+        "  ✗ 'enter the appropriate data'  →  specify the exact field and value\n"
+        "  ✗ 'navigate to the relevant screen'  →  give the screen name and how to reach it\n"
+        "  ✗ 'complete the required fields'  →  list each field with its expected value\n"
+        "  ✗ 'using the system'  →  name the system, screen, and exact action\n"
+        "  ✗ 'as needed', 'as applicable', 'where appropriate'  →  always be specific\n"
+        "  ✗ 'enter the correct information'  →  say what information goes in which field\n"
+        "• SELF-CHECK RULE: Before finalizing, re-read every step for vague language. "
+        "Replace each instance with the specific screen/field/value from the source context. "
+        "If the detail is not in the source material, flag it explicitly inline: "
+        "'⚠️ (Not documented — consult [system/team name])'\n"
+        "• A reader who has never performed this task should be able to follow the steps "
+        "without asking anyone for clarification"
+    ),
+}
+
 # Format/length instructions appended to answer-generation prompts.
 RESPONSE_MODE_INSTRUCTIONS: dict[str, str] = {
     "summary": (

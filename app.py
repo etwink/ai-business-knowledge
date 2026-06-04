@@ -21,7 +21,7 @@ from src.analyzers import (
 from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
-from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, RESPONSE_MODE_LABELS
+from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
 from src.rag import KnowledgeBase, RAGAgent
 import config
 
@@ -70,6 +70,9 @@ def initialize_session():
     # Response mode — controls format and depth of chat answers
     if 'response_mode' not in st.session_state:
         st.session_state.response_mode = "standard"
+    # Detail level — controls thoroughness within a response
+    if 'detail_level' not in st.session_state:
+        st.session_state.detail_level = "standard"
     # Staging keys — hold unsaved selections until the user clicks Save Audience
     if '_audience_staging' not in st.session_state:
         st.session_state._audience_staging = st.session_state.doc_audience
@@ -1093,6 +1096,7 @@ def render_chat_page():
                 knowledge_base=_kb,
                 audience_note=AUDIENCE_NOTES.get(_audience, ""),
                 response_mode=st.session_state.get("response_mode", "standard"),
+                detail_level=st.session_state.get("detail_level", "standard"),
             )
             opening = agent.get_opening_message()
             st.session_state.chat_agent = agent
@@ -1177,8 +1181,8 @@ def render_chat_page():
 
 
 def _render_chat_column(agent) -> None:
-    """Reset button, mode selector, chat history, document updates sidebar, and chat input."""
-    _gap_mode_col, _gap_reset_col = st.columns([3, 1])
+    """Reset button, mode/detail selectors, chat history, document updates sidebar, and chat input."""
+    _gap_mode_col, _gap_detail_col, _gap_reset_col = st.columns([2, 2, 1])
     with _gap_mode_col:
         _gap_current_mode = st.session_state.get("response_mode", "standard")
         st.radio(
@@ -1194,8 +1198,24 @@ def _render_chat_column(agent) -> None:
                 "Step-by-Step Guide — numbered actions with exact screen/field details"
             ),
         )
-    # Sync mode to live agent without reinitialising
+    with _gap_detail_col:
+        _gap_current_detail = st.session_state.get("detail_level", "standard")
+        st.radio(
+            "Detail level",
+            options=list(DETAIL_LEVEL_LABELS.keys()),
+            format_func=lambda k: DETAIL_LEVEL_LABELS[k],
+            index=list(DETAIL_LEVEL_LABELS.keys()).index(_gap_current_detail),
+            horizontal=True,
+            key="detail_level",
+            help=(
+                "Overview — major phases only  |  "
+                "Standard — named screens and key fields  |  "
+                "In-Depth — every field, exact values, system responses"
+            ),
+        )
+    # Sync both controls to the live agent without reinitialising
     agent._response_mode = st.session_state.get("response_mode", "standard")
+    agent._detail_level = st.session_state.get("detail_level", "standard")
     with _gap_reset_col:
         if st.button("🔄 Reset Chat"):
             st.session_state.chat_agent = None
@@ -1386,19 +1406,30 @@ def _mermaid_to_png(mermaid_code: str) -> bytes | None:
     return None
 
 
+def _strip_markdown(text: str) -> str:
+    """Strip common markdown syntax for clean plain-text output."""
+    import re
+    text = re.sub(r'^#{1,6}\s+', '', text, flags=re.MULTILINE)   # headers
+    text = re.sub(r'\*\*(.+?)\*\*', r'\1', text)                  # bold
+    text = re.sub(r'\*(.+?)\*', r'\1', text)                       # italic
+    text = re.sub(r'`(.+?)`', r'\1', text)                         # inline code
+    text = re.sub(r'^\s*[-*]\s+', '• ', text, flags=re.MULTILINE) # bullets
+    return text
+
+
 def _chat_to_text(messages: list[dict], title: str = "Chat Conversation") -> str:
-    """Render a list of chat messages as plain text."""
+    """Render a list of chat messages as plain text (markdown stripped)."""
     lines = [title, "=" * len(title), ""]
     for msg in messages:
         prefix = "You" if msg["role"] == "user" else "Assistant"
         lines.append(f"{prefix}:")
-        lines.append(msg["content"])
+        lines.append(_strip_markdown(msg["content"]))
         lines.append("")
     return "\n".join(lines)
 
 
 def _chat_to_word_bytes(messages: list[dict], title: str = "Chat Conversation") -> bytes:
-    """Render a list of chat messages as a Word document and return raw bytes."""
+    """Render a list of chat messages as a Word document, converting markdown to Word styles."""
     import io
     from docx import Document as DocxDocument
     from docx.shared import Pt, RGBColor
@@ -1415,8 +1446,7 @@ def _chat_to_word_bytes(messages: list[dict], title: str = "Chat Conversation") 
         if is_user:
             label_run.font.color.rgb = RGBColor(0x1F, 0x77, 0xB4)
 
-        content_para = d.add_paragraph(msg["content"])
-        content_para.paragraph_format.left_indent = Pt(18)
+        _add_content_to_docx(d, msg["content"])
         d.add_paragraph()  # blank line between messages
 
     buf = io.BytesIO()
@@ -1594,6 +1624,7 @@ def render_knowledge_chat_page() -> None:
                     kb,
                     audience_note=AUDIENCE_NOTES.get(_audience, ""),
                     response_mode=st.session_state.get("response_mode", "standard"),
+                    detail_level=st.session_state.get("detail_level", "standard"),
                 )
                 st.session_state.rag_messages = []
                 st.rerun()
@@ -1621,6 +1652,7 @@ def render_knowledge_chat_page() -> None:
             kb,
             audience_note=_current_audience_note,
             response_mode=_current_mode,
+            detail_level=st.session_state.get("detail_level", "standard"),
         )
         if _existing_agent is not None:
             # Preserve conversation history when only the audience changed
@@ -1632,8 +1664,6 @@ def render_knowledge_chat_page() -> None:
             )
 
     agent: RAGAgent = st.session_state.rag_agent
-    # Sync mode without reinitialising — it only affects _generate_answer()
-    agent._response_mode = _current_mode
     stats = kb.get_stats()
 
     col1, col2, col3 = st.columns(3)
@@ -1641,7 +1671,7 @@ def render_knowledge_chat_page() -> None:
     col2.metric("Index chunks", stats["chunks"])
     col3.metric("Messages", sum(1 for m in st.session_state.rag_messages if m["role"] == "user"))
 
-    _mode_col, _clear_col, _rebuild_col = st.columns([3, 1, 1])
+    _mode_col, _detail_col, _clear_col, _rebuild_col = st.columns([2, 2, 1, 1])
     with _mode_col:
         st.radio(
             "Response mode",
@@ -1656,6 +1686,24 @@ def render_knowledge_chat_page() -> None:
                 "Step-by-Step Guide — numbered actions with exact screen/field details"
             ),
         )
+    with _detail_col:
+        _current_detail = st.session_state.get("detail_level", "standard")
+        st.radio(
+            "Detail level",
+            options=list(DETAIL_LEVEL_LABELS.keys()),
+            format_func=lambda k: DETAIL_LEVEL_LABELS[k],
+            index=list(DETAIL_LEVEL_LABELS.keys()).index(_current_detail),
+            horizontal=True,
+            key="detail_level",
+            help=(
+                "Overview — major phases only  |  "
+                "Standard — named screens and key fields  |  "
+                "In-Depth — every field, exact values, system responses"
+            ),
+        )
+    # Sync both controls to the live agent without reinitialising
+    agent._response_mode = st.session_state.get("response_mode", "standard")
+    agent._detail_level = st.session_state.get("detail_level", "standard")
     with _clear_col:
         if st.button("🗑️ Clear Conversation"):
             agent.reset()
@@ -1675,7 +1723,7 @@ def render_knowledge_chat_page() -> None:
     # ── Chat history ──────────────────────────────────────────────────
     for msg in st.session_state.rag_messages:
         with st.chat_message(msg["role"]):
-            st.write(msg["content"])
+            st.markdown(msg["content"])
             if msg.get("enriched_query") and msg["enriched_query"] != msg.get("raw_query"):
                 st.caption(f"🔍 Searched for: *{msg['enriched_query']}*")
             if msg.get("sources"):
@@ -1745,7 +1793,7 @@ def render_knowledge_chat_page() -> None:
                     answer = f"Error generating answer: {e}"
                     sources = []
                     enriched_query = user_input
-            st.write(answer)
+            st.markdown(answer)
             if enriched_query and enriched_query != user_input:
                 st.caption(f"🔍 Searched for: *{enriched_query}*")
             if sources:
