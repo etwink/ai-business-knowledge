@@ -359,7 +359,7 @@ class RAGAgent:
             f"If the answer spans multiple sources, integrate them cohesively."
         )
 
-        max_tokens = {"summary": 2000, "guide": 50000}.get(self._response_mode, 10000)
+        max_tokens = {"summary": 3000, "guide": 50000}.get(self._response_mode, 15000)
         return self._llm.query(
             prompt, system_message=self._system_prompt, max_tokens=max_tokens
         )

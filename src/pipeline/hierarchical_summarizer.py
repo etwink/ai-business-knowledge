@@ -152,7 +152,7 @@ Write a cohesive subsystem summary ({lower}–{upper} words) covering:
 6. Error handling approach
 
 Be specific to the actual code described above."""
-        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=_synthesis_max_tokens(cluster.file_count))
 
     # ------------------------------------------------------------------
     # Mixed cluster (COBOL + matching docs)
@@ -263,7 +263,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
 5. Key decision points and business rules
 6. Gaps or discrepancies between the documentation and the code
 7. Error handling and exception paths"""
-        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=5000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=_synthesis_max_tokens(cluster.file_count))
 
     def _generate_technical_map(
         self,
@@ -316,7 +316,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             f"If a detail is uncertain, say so."
         )
         try:
-            return _llm_call_with_retry(self.llm.query, prompt, max_tokens=3000)
+            return _llm_call_with_retry(self.llm.query, prompt, max_tokens=_synthesis_max_tokens(cluster.file_count))
         except Exception:
             return ""
 
@@ -354,7 +354,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             "Cover: business purpose, key processes, data involved, stakeholders, and important rules.\n"
             f"{context_part}{combined}{shared_block}"
         )
-        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, prompt, max_tokens=_synthesis_max_tokens(len(cluster.doc_files)))
 
     def _summarize_large_doc_cluster(self, cluster: DocumentCluster, context_block: str = "") -> str:
         # Build batches of 4, then summarize each batch in parallel
@@ -397,7 +397,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             f'Combine the following batch summaries for "{cluster.cluster_name}" into one cohesive summary ({lower}–{upper} words).\n\n'
             f"{batches_text}{shared_block}"
         )
-        return _llm_call_with_retry(self.llm.query, rollup_prompt, max_tokens=4000)
+        return _llm_call_with_retry(self.llm.query, rollup_prompt, max_tokens=_synthesis_max_tokens(len(cluster.doc_files)))
 
     # ------------------------------------------------------------------
     # Shared helpers
@@ -580,3 +580,14 @@ def _synthesis_word_range(file_count: int) -> tuple[int, int]:
     lower = max(400, min(1000, file_count * 25))
     upper = max(600, min(2500, file_count * 50))
     return lower, upper
+
+
+def _synthesis_max_tokens(file_count: int) -> int:
+    """
+    Derive a max_output_tokens budget from the cluster's expected synthesis length.
+
+    Tokens ≈ words × 1.25 (English prose, BPE tokeniser), with a floor of 2500
+    so small clusters still get a generous budget, and a ceiling of 10 000.
+    """
+    _, upper = _synthesis_word_range(file_count)
+    return max(2500, min(10_000, int(upper * 1.25)))

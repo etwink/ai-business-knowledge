@@ -331,7 +331,7 @@ class ConversationalAgent:
             f"4. Maintain the same professional tone and structure"
         )
 
-        updated = self.llm.query(prompt, max_tokens=2000)
+        updated = self.llm.query(prompt, max_tokens=5000)
 
         self.document_versions.setdefault(target.document_name, [target.summary])
         self.document_versions[target.document_name].append(updated)
