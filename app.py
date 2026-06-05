@@ -560,15 +560,27 @@ def render_group_documents_page():
         )
 
         if st.session_state.bulk_cluster_summaries is None:
+            from src.pipeline.hierarchical_summarizer import _MAX_CLUSTER_WORKERS
+            st.caption(
+                f"Clusters are processed {_MAX_CLUSTER_WORKERS} at a time. "
+                "Each cluster also parallelizes its per-file summaries internally."
+            )
             if st.button("▶️ Run Hierarchical Analysis"):
                 summarizer = HierarchicalSummarizer()
                 progress_bar = st.progress(0, text="Starting…")
-                status_text = st.empty()
+                active_slot = st.empty()   # shows clusters currently in progress
+                done_slot = st.empty()     # shows the most recently completed cluster
 
-                def on_progress(name, idx, total):
-                    frac = idx / total
-                    progress_bar.progress(frac, text=f"Summarizing cluster {idx}/{total}")
-                    status_text.write(f"Processing: **{name}**")
+                def on_progress(completed_name, done, total, active):
+                    frac = done / total if total else 0
+                    progress_bar.progress(frac, text=f"Completed {done}/{total} clusters")
+                    done_slot.markdown(f"✅ **{completed_name}** — complete")
+                    if active:
+                        active_slot.markdown(
+                            "⏳ In progress: " + " · ".join(f"**{n}**" for n in active)
+                        )
+                    else:
+                        active_slot.empty()
 
                 ctx_block = _get_context_block()
                 try:
@@ -589,7 +601,8 @@ def render_group_documents_page():
                         for cs in summaries
                     ]
                     progress_bar.progress(1.0, text="Done!")
-                    status_text.empty()
+                    active_slot.empty()
+                    done_slot.empty()
                     try:
                         st.session_state.storage.save_analyses(
                             _ensure_session(),

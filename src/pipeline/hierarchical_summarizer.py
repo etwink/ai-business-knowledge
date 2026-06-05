@@ -12,6 +12,7 @@ For pure-doc clusters:  all files are summarized together if ≤ 5 files, or in
   batches of 4 that are then rolled up into one cluster summary.
 """
 
+import threading
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
@@ -22,7 +23,8 @@ from .cluster_builder import DocumentCluster
 # ---------------------------------------------------------------------------
 # Concurrency / retry settings
 # ---------------------------------------------------------------------------
-_MAX_SUMMARY_WORKERS = 4   # parallel LLM calls for per-file summaries
+_MAX_SUMMARY_WORKERS = 4   # parallel LLM calls for per-file summaries within a cluster
+_MAX_CLUSTER_WORKERS = 2   # clusters processed in parallel by summarize_all
 _RATE_LIMIT_RETRY_WAIT = 60  # seconds to pause after an HTTP 429
 _RATE_LIMIT_MAX_RETRIES = 3  # max retry attempts per call
 
@@ -72,15 +74,59 @@ class HierarchicalSummarizer:
         context_block: str = "",  # from ProcessContext.to_prompt_block()
     ) -> list[ClusterSummary]:
         """
-        Summarize all clusters. progress_callback(cluster_name, index, total)
-        is called before each cluster if provided.
+        Summarize all clusters in parallel (_MAX_CLUSTER_WORKERS at a time).
+
+        progress_callback signature:
+            callback(completed_name: str, completed_count: int, total: int,
+                     active_clusters: list[str])
+        Called from the main thread each time a cluster finishes so Streamlit UI
+        updates are safe.  active_clusters lists the names still in progress.
         """
-        summaries: list[ClusterSummary] = []
-        for i, cluster in enumerate(clusters):
-            if progress_callback:
-                progress_callback(cluster.cluster_name, i + 1, len(clusters))
-            summaries.append(self._summarize_cluster(cluster, context_block))
-        return summaries
+        total = len(clusters)
+        summaries: list[ClusterSummary | None] = [None] * total
+
+        # Thread-safe tracking of which clusters are currently running
+        active: list[str] = []
+        active_lock = threading.Lock()
+        completed_count = [0]
+
+        def _run(idx: int, cluster: DocumentCluster):
+            with active_lock:
+                active.append(cluster.cluster_name)
+            try:
+                result = self._summarize_cluster(cluster, context_block)
+            except Exception as exc:
+                result = ClusterSummary(
+                    cluster_id=cluster.cluster_id,
+                    cluster_name=cluster.cluster_name,
+                    cluster_type=cluster.cluster_type,
+                    summary=f"[Summarization failed: {exc}]",
+                    file_count=cluster.file_count,
+                )
+            with active_lock:
+                active.remove(cluster.cluster_name)
+                completed_count[0] += 1
+                snapshot = list(active)
+                done = completed_count[0]
+            return idx, result, snapshot, done
+
+        with ThreadPoolExecutor(max_workers=_MAX_CLUSTER_WORKERS) as executor:
+            future_to_cluster = {
+                executor.submit(_run, i, cl): cl
+                for i, cl in enumerate(clusters)
+            }
+            for future in as_completed(future_to_cluster):
+                idx, summary, active_snapshot, done = future.result()
+                summaries[idx] = summary
+                if progress_callback:
+                    progress_callback(
+                        future_to_cluster[future].cluster_name,
+                        done,
+                        total,
+                        active_snapshot,
+                    )
+
+        return [s for s in summaries if s is not None]
 
     # ------------------------------------------------------------------
     # Cluster-type dispatch
