@@ -21,19 +21,20 @@ from __future__ import annotations
 import json
 import re
 
+import config as _rag_cfg
 from .knowledge_base import KnowledgeBase
 
 # ---------------------------------------------------------------------------
-# Retrieval parameters
+# Retrieval parameters (loaded from config so they can be tuned via .env)
 # ---------------------------------------------------------------------------
 
-_DEFAULT_PROCESS_DOC_K = 3       # chunks pulled from generated process document per iteration
-_DEFAULT_WORD_K = 3              # chunks pulled from word/doc files per iteration
-_DEFAULT_CODE_K = 2              # chunks pulled from code/other files per iteration
-_DEFAULT_CLUSTER_SUMMARY_K = 2    # process-narrative summary chunks per iteration
-_DEFAULT_CLUSTER_TECHNICAL_K = 2  # technical-map chunks per iteration
-_DEFAULT_CLUSTER_RAW_K = 5        # raw code chunks fetched per matched cluster (stage 2)
-_MAX_ITERATIONS = 3              # max retrieval-filter-check cycles before generating answer
+_DEFAULT_PROCESS_DOC_K = _rag_cfg.RAG_PROCESS_DOC_K
+_DEFAULT_WORD_K = _rag_cfg.RAG_WORD_K
+_DEFAULT_CODE_K = _rag_cfg.RAG_CODE_K
+_DEFAULT_CLUSTER_SUMMARY_K = _rag_cfg.RAG_CLUSTER_SUMMARY_K
+_DEFAULT_CLUSTER_TECHNICAL_K = _rag_cfg.RAG_CLUSTER_TECHNICAL_K
+_DEFAULT_CLUSTER_RAW_K = _rag_cfg.RAG_CLUSTER_RAW_K
+_MAX_ITERATIONS = _rag_cfg.RAG_MAX_ITERATIONS
 _CHUNK_PREVIEW_CHARS = 400       # how much of each chunk to show the relevance judge
 
 # ---------------------------------------------------------------------------
@@ -86,6 +87,14 @@ _NEEDS_CODE_SYSTEM = (
     "(COBOL programs, Python scripts, SQL, etc.) beyond the business documentation "
     "already provided. "
     "Respond with exactly one word: YES or NO."
+)
+
+_GAP_DETECTION_SYSTEM = (
+    "You are a documentation gap analyst. "
+    "Given a draft answer that flags missing information, produce targeted search queries "
+    "that could find the missing details in a business document database. "
+    "Return ONLY a JSON array of short query strings (up to 5). "
+    'Example: ["BCHI screen field names plan load", "intake screen commands CICS step"]'
 )
 
 _MAX_HISTORY_TURNS = 4
@@ -164,22 +173,26 @@ class RAGAgent:
         expanded_cluster_ids: set[str] = set()
 
         for iteration in range(_MAX_ITERATIONS):
-            # After the first pass: check once whether code is needed at all
+            # After the first pass: check once whether code is needed.
+            # Guide mode always keeps code — screen/field details often live in code files.
             if iteration == 1 and not needs_code_checked:
-                include_code = self._check_needs_code(enriched_query, accepted_chunks)
+                include_code = (
+                    True if self._response_mode == "guide"
+                    else self._check_needs_code(enriched_query, accepted_chunks)
+                )
                 needs_code_checked = True
 
-            # Guide mode: boost Word/procedure docs, pull back on high-level summaries
-            _word_k = self._word_k * 2 if self._response_mode == "guide" else self._word_k
+            # Guide mode: heavily boost procedure docs and Word files, reduce high-level summaries
+            _is_guide = self._response_mode == "guide"
+            _word_k = self._word_k * 3 if _is_guide else self._word_k
+            _process_doc_k = self._process_doc_k * 2 if _is_guide else self._process_doc_k
             _cluster_summary_k = (
-                max(1, self._cluster_summary_k - 1)
-                if self._response_mode == "guide"
-                else self._cluster_summary_k
+                max(1, self._cluster_summary_k - 1) if _is_guide else self._cluster_summary_k
             )
 
             tiered = self.kb.search_tiered(
                 enriched_query,
-                process_doc_k=self._process_doc_k,
+                process_doc_k=_process_doc_k,
                 word_k=_word_k,
                 code_k=self._code_k,
                 cluster_summary_k=_cluster_summary_k,
@@ -219,7 +232,38 @@ class RAGAgent:
             if accepted_chunks and self._check_sufficient(enriched_query, accepted_chunks):
                 break
 
+        # Generate initial answer then do a gap-fill pass for guide mode
         answer = self._generate_answer(user_message, accepted_chunks)
+
+        if self._response_mode == "guide":
+            gap_queries = self._extract_gap_queries(user_message, answer)
+            if gap_queries:
+                seen_ids = {c["_array_idx"] for c in accepted_chunks}
+                extra_chunks: list[dict] = []
+                for gq in gap_queries:
+                    gap_tiered = self.kb.search_tiered(
+                        gq,
+                        process_doc_k=4,
+                        word_k=8,
+                        code_k=4,
+                        cluster_summary_k=0,
+                        cluster_technical_k=2,
+                        exclude_ids=seen_ids,
+                        include_code=True,
+                    )
+                    gap_candidates = (
+                        gap_tiered.get("process_doc", [])
+                        + gap_tiered.get("word", [])
+                        + gap_tiered.get("code", [])
+                        + gap_tiered.get("cluster_technical", [])
+                    )
+                    relevant, irr_ids = self._filter_relevance(gq, gap_candidates)
+                    extra_chunks.extend(relevant)
+                    seen_ids.update(c["_array_idx"] for c in relevant)
+                    seen_ids.update(irr_ids)
+                if extra_chunks:
+                    accepted_chunks.extend(extra_chunks)
+                    answer = self._generate_answer(user_message, accepted_chunks)
 
         self._history.append({"role": "user", "content": user_message})
         self._history.append({"role": "assistant", "content": answer})
@@ -333,20 +377,43 @@ class RAGAgent:
     def _check_sufficient(self, query: str, chunks: list[dict]) -> bool:
         """
         Ask the LLM whether the current accepted chunks are sufficient to answer the query.
+        Uses a stricter bar for guide mode (requires operational specifics).
         Fails open (returns True) so the loop does not spin on an LLM error.
         """
         if not chunks:
             return False
 
+        # Show more chunks at greater depth for guide mode
+        preview_count = 14 if self._response_mode == "guide" else 8
+        preview_chars = 600 if self._response_mode == "guide" else 300
+
         context_preview = "\n\n".join(
-            f"[{i+1}] {c['source_file']}: {c['text'][:300]}"
-            for i, c in enumerate(chunks[:8])
+            f"[{i+1}] {c['source_file']}: {c['text'][:preview_chars]}"
+            for i, c in enumerate(chunks[:preview_count])
         )
+
+        if self._response_mode == "guide" and self._detail_level == "detailed":
+            sufficiency_q = (
+                "Is there sufficient information here to write a DETAILED step-by-step guide? "
+                "This requires all of: specific screen or menu names, exact field names and labels, "
+                "exact commands or values to enter, and expected system responses per step. "
+                "Only say YES if you can see that level of operational specificity. YES or NO."
+            )
+        elif self._response_mode == "guide":
+            sufficiency_q = (
+                "Is there sufficient information here to write a step-by-step guide? "
+                "This requires: named screens or menus, key fields and commands, "
+                "and the full sequence of actions a user must take. YES or NO."
+            )
+        else:
+            sufficiency_q = (
+                "Is there sufficient information here to answer the query completely? YES or NO."
+            )
+
         prompt = (
             f"Query: {query}\n\n"
             f"Context chunks retrieved so far:\n{context_preview}\n\n"
-            f"Is there sufficient information here to answer the query completely? "
-            f"YES or NO."
+            f"{sufficiency_q}"
         )
         try:
             result = self._llm.query(
@@ -379,6 +446,49 @@ class RAGAgent:
             return result.strip().upper().startswith("Y")
         except Exception:
             return True
+
+    def _extract_gap_queries(self, user_question: str, draft_answer: str) -> list[str]:
+        """
+        Scan a draft answer for 'not documented' markers and return targeted search
+        queries to fill those specific gaps.  Returns [] quickly if no markers detected.
+        """
+        gap_markers = (
+            "not in the available documentation",
+            "not documented",
+            "⚠️ (not documented",
+            "not available in the",
+            "no information",
+            "consult the system",
+            "consult [",
+            "not in the source",
+            "not found in",
+        )
+        if not any(m in draft_answer.lower() for m in gap_markers):
+            return []
+
+        prompt = (
+            f"Original question: {user_question}\n\n"
+            f"Draft answer (contains gaps flagged as 'not documented'):\n"
+            f"{draft_answer[:3000]}\n\n"
+            "For each place in the answer where information is flagged as missing or not "
+            "documented, write a short, specific search query that could find that missing "
+            "detail in a business process documentation database. "
+            "Focus on: screen names, field names, commands, navigation paths, system IDs.\n"
+            "Return ONLY a JSON array of up to 5 short query strings. "
+            'Example: ["BCHI plan load screen field names", "BCOP intake screen commands"]'
+        )
+        try:
+            raw = self._llm.query(
+                prompt, system_message=_GAP_DETECTION_SYSTEM, max_tokens=300
+            )
+            match = re.search(r'\[[\s\S]*?\]', raw)
+            if match:
+                queries = json.loads(match.group())
+                if isinstance(queries, list):
+                    return [str(q).strip() for q in queries[:5] if str(q).strip()]
+        except Exception:
+            pass
+        return []
 
     def _expand_cluster_summaries(
         self,

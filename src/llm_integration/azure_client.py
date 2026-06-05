@@ -5,6 +5,15 @@ from openai import AzureOpenAI
 import config
 from .llm_logger import log_call
 
+# Reasoning models consume tokens internally before producing output.
+# Callers express desired *output* tokens; the client scales up to cover the chain.
+_REASONING_OVERHEAD: dict[str, float] = {
+    "none": 1.0,
+    "low": 1.5,
+    "medium": 2.5,
+    "high": 4.0,
+}
+
 
 class AzureLLMClient:
     """Client for interacting with Azure OpenAI."""
@@ -20,6 +29,9 @@ class AzureLLMClient:
         self.deployment_name = config.AZURE_OPENAI_DEPLOYMENT_NAME
         self.reasoning_effort = config.MODEL_REASONING_EFFORT
         self.max_tokens = config.MODEL_MAX_TOKENS
+        self._token_multiplier = _REASONING_OVERHEAD.get(
+            config.MODEL_REASONING_EFFORT.lower(), 1.0
+        )
 
     def query(
         self,
@@ -41,6 +53,7 @@ class AzureLLMClient:
             The LLM response text
         """
         tokens = max_tokens if max_tokens is not None else self.max_tokens
+        budgeted = int(tokens * self._token_multiplier)
 
         input_messages = []
         if system_message:
@@ -51,10 +64,10 @@ class AzureLLMClient:
             model=self.deployment_name,
             input=input_messages,
             reasoning={"effort": self.reasoning_effort},
-            max_output_tokens=tokens,
+            max_output_tokens=budgeted,
         )
 
-        log_call("query", input_messages, response.output_text, self.deployment_name, tokens)
+        log_call("query", input_messages, response.output_text, self.deployment_name, budgeted)
         return response.output_text
 
     def query_raw(
@@ -64,13 +77,14 @@ class AzureLLMClient:
     ) -> str:
         """Send a pre-built message list directly to the API (used by conversational agent)."""
         tokens = max_tokens if max_tokens is not None else self.max_tokens
+        budgeted = int(tokens * self._token_multiplier)
         response = self.client.responses.create(
             model=self.deployment_name,
             input=input_messages,
             reasoning={"effort": self.reasoning_effort},
-            max_output_tokens=tokens,
+            max_output_tokens=budgeted,
         )
-        log_call("query_raw", input_messages, response.output_text, self.deployment_name, tokens)
+        log_call("query_raw", input_messages, response.output_text, self.deployment_name, budgeted)
         return response.output_text
 
     def query_with_context(
