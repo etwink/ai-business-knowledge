@@ -23,7 +23,7 @@ CODE_EXTENSIONS = {
     ".CMD",  # Windows command
 }
 
-WORD_EXTENSIONS = {".DOCX", ".DOC"}
+WORD_EXTENSIONS = {".DOCX", ".DOC", ".TXT", ".HTML", ".HTM"}
 EXCEL_EXTENSIONS = {".XLSX", ".XLS", ".XLSM", ".XLSB"}
 
 

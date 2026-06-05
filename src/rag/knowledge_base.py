@@ -28,7 +28,7 @@ _EMBED_BATCH = 32
 # Tier 3 — Everything else (code, Excel, COBOL, etc.)
 _TIER_BOOST: dict[int, float] = {1: 1.5, 2: 1.2, 3: 1.0}
 
-_WORD_EXTENSIONS = {".doc", ".docx"}
+_WORD_EXTENSIONS = {".doc", ".docx", ".txt", ".html", ".htm"}
 
 # Module-level singleton so the model loads only once per process.
 _model = None
