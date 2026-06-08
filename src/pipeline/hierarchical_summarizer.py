@@ -58,6 +58,7 @@ class ClusterSummary:
     file_count: int = 0
     entry_point: str | None = None
     edge_cases: list[str] = field(default_factory=list)   # boundary/exception scenarios
+    source_files: list[str] = field(default_factory=list) # file names belonging to this cluster
 
 
 class HierarchicalSummarizer:
@@ -102,6 +103,7 @@ class HierarchicalSummarizer:
                     cluster_type=cluster.cluster_type,
                     summary=f"[Summarization failed: {exc}]",
                     file_count=cluster.file_count,
+                    source_files=[f.name for f in cluster.all_files],
                 )
             with active_lock:
                 active.remove(cluster.cluster_name)
@@ -164,6 +166,7 @@ class HierarchicalSummarizer:
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
             edge_cases=edge_cases,
+            source_files=[f.name for f in cluster.all_files],
         )
 
     def _synthesize_cobol(
@@ -233,6 +236,7 @@ Be specific to the actual code described above."""
             file_count=cluster.file_count,
             entry_point=cluster.entry_point,
             edge_cases=edge_cases,
+            source_files=[f.name for f in cluster.all_files],
         )
 
     def _summarize_doc_files_with_cobol_context(
@@ -384,6 +388,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             key_processes=_extract_bullets(synthesis, max_items=_scaled_max_bullets(cluster.file_count)),
             file_count=cluster.file_count,
             edge_cases=edge_cases,
+            source_files=[f.name for f in cluster.all_files],
         )
 
     def _summarize_small_doc_cluster(self, cluster: DocumentCluster, context_block: str = "") -> str:

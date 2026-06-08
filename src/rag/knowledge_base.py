@@ -369,6 +369,48 @@ class KnowledgeBase:
 
         return results
 
+    def update_document_chunks(
+        self,
+        source_file: str,
+        new_content: str,
+        file_type: str = "document_update",
+        tier: int = 2,
+    ) -> int:
+        """Replace all chunks keyed to source_file with fresh chunks from new_content.
+
+        Use a distinct source_file key (e.g. "[Updated Summary — PAYCALC.cbl]") so
+        these updated-summary chunks do not collide with the original file's chunks.
+        Called automatically after the conversation agent updates a document.
+        Returns the number of new chunks added.
+        """
+        self._ensure_loaded()
+
+        # Drop any existing chunks with this exact source_file key
+        keep_mask = [c.source_file != source_file for c in self._chunks]
+        kept_chunks = [c for c, k in zip(self._chunks, keep_mask) if k]
+        kept_emb: np.ndarray | None = None
+        if self._embeddings is not None and len(self._embeddings) > 0:
+            kept_emb = self._embeddings[np.array(keep_mask, dtype=bool)]
+
+        new_chunks = _chunk_text(new_content, source_file=source_file, file_type=file_type, tier=tier)
+        if not new_chunks:
+            return 0
+
+        model = _get_model()
+        new_emb = model.encode(
+            [c.text for c in new_chunks],
+            normalize_embeddings=True,
+            show_progress_bar=False,
+        ).astype(np.float32)
+
+        merged_emb = (
+            np.vstack([kept_emb, new_emb])
+            if kept_emb is not None and len(kept_emb) > 0
+            else new_emb
+        )
+        self._persist(kept_chunks + new_chunks, merged_emb)
+        return len(new_chunks)
+
     def get_stats(self) -> dict:
         self._ensure_loaded()
         unique_files = {c.source_file for c in self._chunks}

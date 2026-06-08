@@ -186,6 +186,7 @@ def render_sidebar():
                             appendix=doc.get('appendix', ''),
                             process_flow_diagram=doc.get('process_flow_diagram', ''),
                             process_flow_ascii=doc.get('process_flow_ascii', ''),
+                            citations=doc.get('citations', {}),
                         )
                     
                     if 'gap_analysis' in session_data:
@@ -1160,6 +1161,95 @@ def render_gap_analysis_page():
         )
 
 
+def _get_all_source_files() -> list:
+    """Return all source files available for KB indexing from the current session state."""
+    scanned = st.session_state.get("bulk_scanned")
+    if scanned:
+        return scanned.cobol + scanned.code + scanned.word + scanned.excel
+    uploaded = st.session_state.get("uploaded_files", [])
+    return [f for f in uploaded if isinstance(f, Path)]
+
+
+def _render_chat_kb_banner(agent) -> None:
+    """Show KB status banner and inline build/restart controls above the gap tracker."""
+    _session = st.session_state.current_session
+    if not _session:
+        return
+
+    _kb_dir = Path("./analysis_sessions") / _session / "knowledge_base"
+    _kb = KnowledgeBase(_kb_dir)
+
+    if not _kb.is_built():
+        with st.expander(
+            "💡 Knowledge Base not built — expand to build for richer responses",
+            expanded=False,
+        ):
+            st.write(
+                "Without the Knowledge Base the agent cannot link gaps to specific source "
+                "passages, clarification responses won't include quoted excerpts, and document "
+                "targeting relies on keyword overlap only.  Building typically takes 1–3 minutes."
+            )
+            all_files = _get_all_source_files()
+            if not all_files:
+                st.warning("No source files found in session state. Run the Bulk Load or upload documents first.")
+                return
+
+            if st.button("🏗️ Build Knowledge Base", key="gap_chat_build_kb", type="primary"):
+                _prog = st.progress(0, text="Starting…")
+                _status = st.empty()
+
+                def _on_progress(msg, cur, tot):
+                    _prog.progress(cur / tot if tot else 0, text=msg)
+                    _status.write(msg)
+
+                try:
+                    _fcm: dict[str, str] = {}
+                    _fcn: dict[str, str] = {}
+                    for _cl in (st.session_state.get("bulk_clusters") or []):
+                        for _f in list(getattr(_cl, "cobol_files", [])) + list(getattr(_cl, "doc_files", [])):
+                            _fcm[_f.name] = _cl.cluster_id
+                            _fcn[_f.name] = _cl.cluster_name
+
+                    n = _kb.build(all_files, progress_callback=_on_progress,
+                                  file_cluster_map=_fcm or None, file_cluster_names=_fcn or None)
+
+                    _cs = st.session_state.get("bulk_cluster_summaries") or []
+                    if _cs:
+                        _status.write("Indexing cluster summaries…")
+                        _kb.index_cluster_summaries(_cs)
+
+                    _pd = st.session_state.get("process_document")
+                    if _pd:
+                        _status.write("Indexing process document…")
+                        _kb.index_process_document(_pd)
+
+                    _prog.progress(1.0, text="Done!")
+                    _status.empty()
+                    st.success(f"Knowledge Base built: {n} chunks from {len(all_files)} files.")
+                    # Reset agent so it re-initialises with the fresh KB
+                    st.session_state.chat_kb = _kb
+                    st.session_state.chat_agent = None
+                    st.session_state.chat_messages = []
+                    st.session_state.document_updates = {}
+                    st.rerun()
+                except Exception as _e:
+                    st.error(f"Build failed: {_e}")
+    elif agent.knowledge_base is None:
+        # KB was built (perhaps on the Knowledge Chat page) after this agent was initialised
+        st.session_state.chat_kb = _kb  # keep session ref in sync
+        st.info(
+            "ℹ️ The Knowledge Base is now available. Restart the chat to enable source linking.",
+        )
+        if st.button("🔄 Restart Chat with Knowledge Base", key="gap_chat_restart_kb"):
+            st.session_state.chat_agent = None
+            st.session_state.chat_messages = []
+            st.session_state.document_updates = {}
+            st.rerun()
+    else:
+        # KB is built and the agent already has it — keep session ref current
+        st.session_state.chat_kb = _kb
+
+
 def render_chat_page():
     """Conversational gap-filling chat with the AI agent."""
     st.header("💬 Gap-Filling Chat")
@@ -1212,9 +1302,14 @@ def render_chat_page():
             st.session_state.chat_agent = agent
             st.session_state.chat_messages = [{"role": "assistant", "content": opening}]
             st.session_state.document_updates = {}
+            st.session_state.chat_kb = _kb  # persist KB ref for update-after-doc-change
         st.rerun()
 
     agent: ConversationalAgent = st.session_state.chat_agent
+
+    # ── KB status banner ─────────────────────────────────────────────────────
+    _render_chat_kb_banner(agent)
+
     total_gaps = len(agent.gap_queue)
     resolved_gaps = sum(1 for g in agent.gap_queue if g.resolved)
 
@@ -1421,6 +1516,19 @@ def _render_chat_column(agent) -> None:
                     )
                 except Exception:
                     pass
+
+            # Refresh KB chunks for every updated document so future searches
+            # reflect the newly incorporated information
+            _chat_kb = st.session_state.get("chat_kb")
+            if _chat_kb is not None and _chat_kb.is_built() and response.document_updates:
+                for update in response.document_updates:
+                    try:
+                        _chat_kb.update_document_chunks(
+                            source_file=f"[Updated Summary — {update.document_name}]",
+                            new_content=update.content,
+                        )
+                    except Exception:
+                        pass
 
             try:
                 st.session_state.storage.save_chat_messages(
@@ -1742,6 +1850,21 @@ def _generate_word_doc(doc) -> bytes:
             for run in code_para.runs:
                 run.font.name = "Courier New"
                 run.font.size = Pt(9)
+
+    if doc.citations:
+        d.add_heading("Citations", level=1)
+        d.add_paragraph(
+            "The following source clusters were referenced during document generation. "
+            "Each [ref:N] marker in the original draft traces to the cluster listed here."
+        )
+        for ref_key, info in sorted(doc.citations.items(), key=lambda kv: kv[0]):
+            cluster_name = info.get("cluster_name", ref_key) if isinstance(info, dict) else ref_key
+            files = info.get("files", []) if isinstance(info, dict) else []
+            p = d.add_paragraph(style="List Bullet")
+            label = p.add_run(f"[{ref_key}]  {cluster_name}")
+            label.bold = True
+            if files:
+                p.add_run(" — " + ", ".join(files))
 
     buf = io.BytesIO()
     d.save(buf)

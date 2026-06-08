@@ -30,6 +30,9 @@ class ProcessDocument:
     appendix: str = ""
     process_flow_diagram: str = ""  # Mermaid flowchart syntax (rendered in-browser)
     process_flow_ascii: str = ""   # Plain-text flowchart for print / Word export
+    # Maps "ref:N" → {"cluster_name": str, "files": list[str]}.
+    # Populated only when built from cluster summaries; empty for the analyses path.
+    citations: dict = field(default_factory=dict)
 
 
 @dataclass
@@ -147,18 +150,30 @@ class ProcessDocumentBuilder:
         """Build process document from hierarchical cluster summaries (bulk mode).
 
         Uses one LLM call per section so reasoning-model token budgets are not
-        exhausted before the final sections are written.
+        exhausted before the final sections are written.  After all sections are
+        generated, [ref:N] citation markers are extracted into ProcessDocument.citations
+        and stripped from the body text so the final output is clean.
         """
         summaries = [cs.summary for cs in cluster_summaries]
         tech_summaries = [
             getattr(cs, "technical_summary", "") for cs in cluster_summaries
         ]
-        return self._build_section_by_section(
+        doc = self._build_section_by_section(
             lambda key: PromptBuilder.build_section_prompt_from_clusters(
                 key, summaries, context_block, tech_summaries=tech_summaries
             ),
             progress_callback,
         )
+
+        # Build 1-based cluster source map from ClusterSummary.source_files
+        cluster_sources: dict[int, dict] = {
+            i + 1: {
+                "cluster_name": cs.cluster_name,
+                "files": getattr(cs, "source_files", []),
+            }
+            for i, cs in enumerate(cluster_summaries)
+        }
+        return self._extract_citations_from_document(doc, cluster_sources)
 
     def build_process_document(
         self,
@@ -197,6 +212,56 @@ class ProcessDocumentBuilder:
             appendix=results.get("appendix", ""),
             process_flow_diagram=results.get("process_flow_diagram", ""),
             process_flow_ascii=results.get("process_flow_ascii", ""),
+            citations={},
+        )
+
+    @staticmethod
+    def _extract_citations_from_document(
+        doc: "ProcessDocument",
+        cluster_sources: Dict[int, dict],
+    ) -> "ProcessDocument":
+        """Parse [ref:N] markers from narrative sections, build citations dict, strip markers.
+
+        cluster_sources: {N: {"cluster_name": str, "files": list[str]}}
+        Returns a new ProcessDocument with clean body text and citations populated.
+        """
+        _ref_re = re.compile(r'\[ref:(\d+)\]', re.IGNORECASE)
+        _NARRATIVE = (
+            "overview", "integrated_processes", "dependencies",
+            "data_flow", "decision_points", "systems_and_components",
+        )
+
+        # Collect every cluster index referenced across all narrative sections
+        referenced: set[int] = set()
+        for field_name in _NARRATIVE:
+            for m in _ref_re.finditer(getattr(doc, field_name, "")):
+                referenced.add(int(m.group(1)))
+
+        if not referenced:
+            return doc  # LLM emitted no markers — nothing to strip
+
+        # Build citations dict
+        citations: dict = {
+            f"ref:{n}": cluster_sources[n]
+            for n in sorted(referenced)
+            if n in cluster_sources
+        }
+
+        # Strip markers and reconstruct
+        def _clean(text: str) -> str:
+            return _ref_re.sub("", text).strip()
+
+        return ProcessDocument(
+            overview=_clean(doc.overview),
+            integrated_processes=_clean(doc.integrated_processes),
+            dependencies=_clean(doc.dependencies),
+            data_flow=_clean(doc.data_flow),
+            decision_points=_clean(doc.decision_points),
+            systems_and_components=_clean(doc.systems_and_components),
+            appendix=doc.appendix,
+            process_flow_diagram=doc.process_flow_diagram,
+            process_flow_ascii=doc.process_flow_ascii,
+            citations=citations,
         )
 
 _RANKING_SYSTEM = (

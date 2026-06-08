@@ -534,6 +534,22 @@ Process Document:
         ),
     }
 
+    # Sections that should carry inline [ref:N] citation markers.
+    _CITATION_SECTIONS: frozenset = frozenset({
+        "overview", "integrated_processes", "dependencies",
+        "data_flow", "decision_points", "systems_and_components",
+    })
+
+    # Appended after the section instruction when building from clusters to enable traceability.
+    _CITATION_INSTRUCTION = (
+        "CITATION MARKERS: After any sentence (or bullet point) that draws primarily from a "
+        "specific cluster, append [ref:N] at the end (where N is the cluster number shown above, "
+        "e.g. [ref:3] for Cluster 3). If a sentence synthesizes several clusters, append all "
+        "relevant refs (e.g. [ref:1][ref:4]). Omit markers from general synthesis sentences and "
+        "from headings. These markers are stripped before the document is published — they are "
+        "for internal source-tracing only."
+    )
+
     # Appended to every section prompt to prevent the LLM from inventing terminology.
     _LINGO_CONSTRAINT = (
         "CRITICAL CONSTRAINT: Use ONLY names, terms, acronyms, and system identifiers "
@@ -585,6 +601,10 @@ Process Document:
 
         section_label = section_key.replace("_", " ").upper()
         audience_instruction = cls._AUDIENCE_NOTE if not context_block else ""
+        citation_block = (
+            f"\n{cls._CITATION_INSTRUCTION}\n"
+            if section_key in cls._CITATION_SECTIONS else ""
+        )
         return (
             f"You are writing one section of a business process document.\n"
             f"{audience_instruction}\n"
@@ -594,7 +614,8 @@ Process Document:
             f"{tech_block}\n"
             f"Write ONLY the {section_label} section of the process document.\n"
             f"{instruction}\n"
-            f"{cls._LINGO_CONSTRAINT}\n"
+            f"{cls._LINGO_CONSTRAINT}"
+            f"{citation_block}\n"
             f"Do not include any other section headers or content. "
             f"Output plain prose and/or bullet lists — no markdown fences."
         )
