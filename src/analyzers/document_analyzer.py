@@ -338,10 +338,18 @@ class GapAnalyzer:
 
         try:
             result = self.llm.query(prompt, system_message=_RANKING_SYSTEM, max_tokens=500)
-            match = re.search(r'\[[\s\S]*?\]', result)
-            if match:
-                scores = json.loads(match.group())
-                if isinstance(scores, list) and len(scores) == len(gaps):
+            # Walk every [...] match in the response — the non-greedy regex may grab
+            # short spurious brackets (e.g. "[15] gaps") before the actual array.
+            for raw_match in re.findall(r'\[[^\[\]]*\]', result):
+                try:
+                    scores = json.loads(raw_match)
+                except Exception:
+                    continue
+                if (
+                    isinstance(scores, list)
+                    and len(scores) == len(gaps)
+                    and all(isinstance(s, (int, float)) for s in scores)
+                ):
                     ranked = [
                         {**g, "importance": max(1, min(10, int(float(s))))}
                         for g, s in zip(gaps, scores)

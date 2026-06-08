@@ -19,16 +19,154 @@ _MAX_DOC_CHARS = 8_000   # how much of the reference doc to feed into Pass 2
 
 # Human-readable labels shown in the UI audience selector.
 AUDIENCE_LABELS: dict[str, str] = {
-    "new_employee": "New Employee / No Prior Knowledge",
-    "business":     "Business / Executive",
-    "developer":    "Technical / Developer",
-    "expert":       "Subject Matter Expert",
-    "custom":       "Other (describe below)",
+    "new_employee":       "New Employee / No Prior Knowledge",
+    "business_user":      "Business User / Operations Staff",
+    "expert":             "Subject Matter Expert",
+    "business":           "Executive / Management",
+    "developer":          "Technical / Developer",
+    "compliance":         "Compliance / Audit Staff",
+    "trainer":            "Trainer / Learning Designer",
+    "care_coordinator":   "Care Coordinator / Clinical Staff",
+    "claims_adjudicator": "Claims Adjudicator",
+    "member_services":    "Member Services Representative",
+    "custom":             "Other (describe below)",
+}
+
+# One-line plain-English description of each audience — shown in the UI so the
+# user can confirm the LLM will write for the right reader.
+AUDIENCE_DESCRIPTIONS: dict[str, str] = {
+    "new_employee":       "a new employee with no prior knowledge of these systems or business domain",
+    "business_user":      "a business operations user who works with screens and spreadsheets daily and knows the domain well but is not a technical professional",
+    "expert":             "a subject matter expert with deep domain and technical knowledge",
+    "business":           "an executive or manager who needs to understand outcomes, risks, and decisions — not technical implementation details",
+    "developer":          "a software developer or engineer responsible for implementation or maintenance",
+    "compliance":         "a compliance officer or auditor focused on regulatory requirements, controls, audit trails, and policy adherence",
+    "trainer":            "a trainer or instructional designer building learning materials who needs content chunked into teachable steps with context for classroom or e-learning use",
+    "care_coordinator":   "a care coordinator or clinical staff member familiar with health insurance workflows, medical terminology, and member care processes",
+    "claims_adjudicator": "a claims adjudicator who processes insurance claims and needs exact adjudication rules, edit/reason codes, and coordination of benefits logic",
+    "member_services":    "a member services representative answering member calls who needs fast-lookup summaries, escalation scripts, and member-facing explanations",
+    "custom":             "",
+}
+
+# Groups used to visually separate audiences in the UI selector.
+# Order within each group determines display order; group order determines column order.
+AUDIENCE_GROUPS: dict[str, list[str]] = {
+    "Experience Level":          ["new_employee", "business_user", "expert"],
+    "Business & Technology":     ["business", "developer", "compliance", "trainer"],
+    "Health Insurance Ops":      ["care_coordinator", "claims_adjudicator", "member_services"],
+    "Other":                     ["custom"],
 }
 
 # Instruction text injected into every LLM prompt so writing style matches
 # the intended reader.  Keyed by the same keys as AUDIENCE_LABELS.
 AUDIENCE_NOTES: dict[str, str] = {
+    "compliance": (
+        "IMPORTANT — Audience: Compliance officers, internal auditors, and regulatory staff "
+        "responsible for ensuring adherence to laws, standards, and internal policies.\n\n"
+        "WRITING RULES:\n"
+        "• Map every process step to the regulation, standard, or policy it satisfies "
+        "(e.g. HIPAA §164.312, NCQA UM Standard, state insurance code)\n"
+        "• Identify the control at each step: who approves, what is validated, what is logged\n"
+        "• Describe what evidence is produced — logs, reports, signatures — and how long it "
+        "is retained\n"
+        "• Clearly assign ownership: who is responsible for compliance at each stage and who "
+        "signs off on exceptions\n"
+        "• Flag any gaps where a required control, documentation step, or audit trail is absent\n"
+        "• INCLUDE: segregation-of-duties details, exception approval workflows, and any "
+        "known audit findings or remediation history\n"
+        "• Be precise about dates, deadlines, and regulatory thresholds — round numbers or "
+        "approximations are insufficient for audit purposes"
+    ),
+    "trainer": (
+        "IMPORTANT — Audience: Trainers and instructional designers who will turn this "
+        "material into classroom sessions, job aids, or e-learning modules.\n\n"
+        "WRITING RULES:\n"
+        "• Begin each section with a clear learning objective: 'After this section, the "
+        "learner will be able to…'\n"
+        "• Explain the REASON behind each step — learners retain steps they understand, "
+        "not just steps they memorize\n"
+        "• Break every process into the smallest teachable units: one concept or action per "
+        "step, no compound steps\n"
+        "• Include at least one concrete example, sample case, or scenario for each major "
+        "process stage\n"
+        "• Identify knowledge-check points: where in the flow a learner's understanding "
+        "should be tested before proceeding\n"
+        "• Flag prerequisites: what background knowledge, system access, or prior training "
+        "a learner needs before starting\n"
+        "• Use active, imperative language ('Click', 'Enter', 'Verify') so steps can be "
+        "used directly as job aids"
+    ),
+    "claims_adjudicator": (
+        "IMPORTANT — Audience: Claims adjudicators who review, process, and adjudicate "
+        "health insurance claims — deeply familiar with claims terminology and workflow.\n\n"
+        "WRITING RULES:\n"
+        "• Claims terminology is expected: EOB, COB, primary/secondary payer, timely filing, "
+        "edit codes, reason codes, ANSI X12 835/837, NPI, procedure modifier, place of service\n"
+        "• For every decision point, state the specific rule: which edit fires, what the "
+        "threshold is, which benefit applies, and what the system action is\n"
+        "• Document all edit codes and denial reason codes with their exact meaning and the "
+        "correct adjudicator response for each\n"
+        "• Coordination of benefits: specify the COB method (standard, non-duplication, "
+        "maintenance of benefits), payer sequencing rules, and crossover claim handling\n"
+        "• Include timely filing windows, retro-adjustment limits, and late submission "
+        "override procedures\n"
+        "• Describe override and manual review paths: when to escalate, what documentation "
+        "is required, and who has approval authority\n"
+        "• Be precise about dollar amounts, percentages, and day counts — ranges are "
+        "not acceptable where exact values exist"
+    ),
+    "member_services": (
+        "IMPORTANT — Audience: Member services representatives who answer member calls and "
+        "need to quickly find answers, explain outcomes, and resolve issues.\n\n"
+        "WRITING RULES:\n"
+        "• Write in plain, conversational language that can be read aloud to a member\n"
+        "• For every process outcome (approval, denial, pending), provide the member-facing "
+        "explanation: what happened, why, and what the member can do next\n"
+        "• Include turnaround times and timelines that staff can quote to members: "
+        "'You can expect a letter within X business days'\n"
+        "• Document escalation triggers: when to transfer, who to transfer to, and what "
+        "information to gather and summarize before the handoff\n"
+        "• Provide standard responses or talking points for the most common member "
+        "questions, objections, and complaints\n"
+        "• Explain coverage limits, exclusions, cost-share, and network rules in terms "
+        "a member without insurance knowledge can understand\n"
+        "• AVOID: internal system names, technical codes, and operational jargon that "
+        "would confuse or alarm a member if accidentally repeated"
+    ),
+    "business_user": (
+        "IMPORTANT — Audience: Business operations staff who use these systems day-to-day — "
+        "entering data, processing transactions, running reports. They know the business domain "
+        "well but are NOT IT professionals.\n\n"
+        "WRITING RULES:\n"
+        "• Use exact screen names, menu paths, button labels, and field names exactly as they "
+        "appear in the system\n"
+        "• One action per step — state what the user clicks, types, or selects\n"
+        "• State what the screen shows in response to each action\n"
+        "• Business and domain terminology is fine — these staff know the business context\n"
+        "• AVOID: technical terms (API, database, schema, program name, batch job, server), "
+        "infrastructure concepts, code references\n"
+        "• For data entry fields: specify the exact field name and any acceptable values, "
+        "formats, or validation rules the user needs to know\n"
+        "• Explain what error messages mean in plain language and what the user should do next"
+    ),
+    "care_coordinator": (
+        "IMPORTANT — Audience: Care coordinators and clinical support staff in health insurance "
+        "operations — familiar with medical terminology, authorization workflows, and member "
+        "services processes.\n\n"
+        "WRITING RULES:\n"
+        "• Clinical and medical terminology is appropriate: ICD/CPT codes, prior authorization, "
+        "utilization management, level of care, care plan, concurrent review, etc.\n"
+        "• Tie every process step to its member-facing or clinical context — explain why this "
+        "step matters for the member's care or the authorization decision\n"
+        "• Reference standard health insurance workflows by name: prior auth, concurrent review, "
+        "discharge planning, case management, appeals and grievances\n"
+        "• Include regulatory context where relevant: HIPAA privacy rules, required turnaround "
+        "times, state mandates, NCQA/URAC standards\n"
+        "• Clearly document escalation paths: who to contact for clinical exceptions, urgent "
+        "cases, or peer-to-peer review requests\n"
+        "• AVOID: deep technical system internals — focus on what staff need to do and why, "
+        "not how the system processes the request behind the scenes"
+    ),
     "new_employee": (
         "IMPORTANT — Audience: People on their very first day — zero prior knowledge of "
         "these systems, processes, or business domain.\n\n"

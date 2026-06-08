@@ -21,7 +21,7 @@ from src.analyzers import (
 from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
-from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
+from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, AUDIENCE_DESCRIPTIONS, AUDIENCE_GROUPS, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
 from src.rag import KnowledgeBase, RAGAgent
 from src.llm_integration import llm_usage_tracker
 import config
@@ -245,10 +245,16 @@ def render_sidebar():
                 preview = ctx.process_description[:80]
                 ctx_lines.append(f"💬 {preview}{'…' if len(ctx.process_description) > 80 else ''}")
             ctx_lines.append(f"👥 Audience: **{audience_label}**")
+            _aud_desc = AUDIENCE_DESCRIPTIONS.get(_aud_key, "")
+            if _aud_desc:
+                ctx_lines.append(f"*{_aud_desc}*")
             st.info("\n\n".join(ctx_lines))
         else:
             st.caption("No process context set — go to **Group Documents** to add one.")
             st.caption(f"👥 Audience: **{audience_label}**")
+            _aud_desc = AUDIENCE_DESCRIPTIONS.get(_aud_key, "")
+            if _aud_desc:
+                st.caption(f"*{_aud_desc}*")
 
         page = st.radio(
             "Select a step:",
@@ -439,17 +445,36 @@ def render_group_documents_page():
                     st.success("Context saved.")
                     st.rerun()
 
-        # Audience selector — stage changes then explicitly save
+        # Audience selector — grouped button grid, stages changes until Save is clicked
         st.write("**Document Audience**")
         st.caption("Controls the writing style of all generated documentation and chat responses.")
-        audience_options = list(AUDIENCE_LABELS.keys())
-        st.selectbox(
-            "Who will read the generated documentation?",
-            options=audience_options,
-            format_func=lambda k: AUDIENCE_LABELS[k],
-            key="_audience_staging",
-            label_visibility="collapsed",
-        )
+        _current_staging = st.session_state.get("_audience_staging", "new_employee")
+        _main_groups = [(g, keys) for g, keys in AUDIENCE_GROUPS.items() if g != "Other"]
+        _other_keys  = AUDIENCE_GROUPS.get("Other", [])
+        _group_cols  = st.columns(len(_main_groups))
+        for _col, (_gname, _gkeys) in zip(_group_cols, _main_groups):
+            with _col:
+                st.caption(f"**{_gname}**")
+                for _key in _gkeys:
+                    if st.button(
+                        AUDIENCE_LABELS[_key],
+                        key=f"_aud_btn_{_key}",
+                        type="primary" if _current_staging == _key else "secondary",
+                        use_container_width=True,
+                    ):
+                        st.session_state._audience_staging = _key
+                        st.rerun()
+        for _key in _other_keys:
+            if st.button(
+                AUDIENCE_LABELS[_key],
+                key=f"_aud_btn_{_key}",
+                type="primary" if _current_staging == _key else "secondary",
+            ):
+                st.session_state._audience_staging = _key
+                st.rerun()
+        _staged_desc = AUDIENCE_DESCRIPTIONS.get(_current_staging, "")
+        if _staged_desc:
+            st.caption(f"The LLM will write for: *{_staged_desc}*")
         if st.session_state._audience_staging == "custom":
             st.text_area(
                 "Describe your audience",
