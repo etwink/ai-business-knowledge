@@ -191,6 +191,12 @@ class AnalysisStorage:
         if doc_updates:
             session_data['document_updates'] = doc_updates
 
+        # Load session settings (audience, process context)
+        settings_file = session_dir / "session_settings.json"
+        if settings_file.exists():
+            with open(settings_file, 'r', encoding='utf-8') as f:
+                session_data['settings'] = json.load(f)
+
         return session_data
 
     def list_sessions(self) -> List[str]:
@@ -226,6 +232,14 @@ class AnalysisStorage:
         with open(file_path, 'w', encoding='utf-8') as f:
             json.dump(data, f, indent=2, ensure_ascii=False)
 
+        return file_path
+
+    def save_settings(self, session_name: str, settings: dict) -> Path:
+        """Save session-level settings: audience selection and process context."""
+        session_dir = self.create_session(session_name)
+        file_path = session_dir / "session_settings.json"
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(settings, f, indent=2, ensure_ascii=False)
         return file_path
 
     def save_chat_messages(self, session_name: str, messages: List[Dict]) -> Path:

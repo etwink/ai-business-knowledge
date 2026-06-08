@@ -81,6 +81,24 @@ def initialize_session():
         st.session_state._custom_audience_staging = st.session_state.custom_audience_note
 
 
+def _save_session_settings() -> None:
+    """Persist audience selection and process context for the current session."""
+    session_name = st.session_state.get("current_session")
+    if not session_name:
+        return
+    ctx = st.session_state.get("process_context")
+    settings = {
+        "doc_audience": st.session_state.get("doc_audience", "new_employee"),
+        "custom_audience_note": st.session_state.get("custom_audience_note", ""),
+        "process_context": {
+            "foundation_document": ctx.foundation_document if ctx else None,
+            "process_description": ctx.process_description if ctx else "",
+            "additional_notes": ctx.additional_notes if ctx else "",
+        } if ctx else None,
+    }
+    st.session_state.storage.save_settings(session_name, settings)
+
+
 def _ensure_session() -> str:
     """Return current session name, auto-creating a timestamped one if not set."""
     if not st.session_state.current_session:
@@ -220,6 +238,23 @@ def render_sidebar():
                                 for u in updates
                             ]
                         st.session_state.document_updates = doc_updates
+
+                    if 'settings' in session_data:
+                        _s = session_data['settings']
+                        if 'doc_audience' in _s:
+                            st.session_state.doc_audience = _s['doc_audience']
+                            st.session_state._audience_staging = _s['doc_audience']
+                        if 'custom_audience_note' in _s:
+                            st.session_state.custom_audience_note = _s['custom_audience_note']
+                            st.session_state._custom_audience_staging = _s['custom_audience_note']
+                        if _s.get('process_context'):
+                            from src.pipeline.context_agent import ProcessContext
+                            _pc = _s['process_context']
+                            st.session_state.process_context = ProcessContext(
+                                foundation_document=_pc.get('foundation_document'),
+                                process_description=_pc.get('process_description', ''),
+                                additional_notes=_pc.get('additional_notes', ''),
+                            )
 
                     llm_usage_tracker.load_session(selected_session)
                     st.success(f"Loaded session: {selected_session}")
@@ -403,6 +438,7 @@ def render_group_documents_page():
                     st.write(ctx.additional_notes)
                 if st.button("✏️ Clear and re-set context", key="group_clear_ctx"):
                     st.session_state.process_context = None
+                    _save_session_settings()
                     st.rerun()
         else:
             with st.expander("Set context now", expanded=True):
@@ -440,6 +476,7 @@ def render_group_documents_page():
                         )
 
                     st.session_state.process_context = ctx_result
+                    _save_session_settings()
                     if detected_doc:
                         st.info(f"📄 Reference document detected and read: **{detected_doc}**")
                     st.success("Context saved.")
@@ -489,6 +526,7 @@ def render_group_documents_page():
             st.session_state.doc_audience = st.session_state._audience_staging
             if st.session_state._audience_staging == "custom":
                 st.session_state.custom_audience_note = st.session_state.get("_custom_audience_staging", "")
+            _save_session_settings()
             st.rerun()
         # Show unsaved-changes warning when staging differs from committed value
         _saved_aud = st.session_state.get("doc_audience", "new_employee")

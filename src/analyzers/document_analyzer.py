@@ -322,7 +322,7 @@ class GapAnalyzer:
             return []
 
         lines = "\n".join(
-            f"[{i+1}] [{g['category']}] {g['description']}"
+            f"Gap Number: [{i+1}]\tGap Category: [{g['category']}]\tGap Description: {g['description']}"
             for i, g in enumerate(gaps)
         )
         prompt = (
@@ -332,12 +332,12 @@ class GapAnalyzer:
             "4–6 = Medium (process inefficiency, documentation clarity issue)\n"
             "1–3 = Low (minor improvement, cosmetic)\n\n"
             f"Gaps:\n{lines}\n\n"
-            "Return ONLY a JSON integer array in the same order. "
+            "Return ONLY a JSON integer array ordered by Gap Number (where the rating of Gap Number 1 is at index = 0 in the JSON integer array, rating of Gap Number 2 is at index = 1, etc.). "
             "Example for 4 gaps: [8, 3, 7, 5]"
         )
 
         try:
-            result = self.llm.query(prompt, system_message=_RANKING_SYSTEM, max_tokens=500)
+            result = self.llm.query(prompt, system_message=_RANKING_SYSTEM, max_tokens=(len(gaps)*200)+1000)  # heuristic: allow ~200 tokens per gap plus some buffer for the prompt and instructions
             # Walk every [...] match in the response — the non-greedy regex may grab
             # short spurious brackets (e.g. "[15] gaps") before the actual array.
             for raw_match in re.findall(r'\[[^\[\]]*\]', result):
