@@ -191,147 +191,184 @@ DEPENDENCIES:
     # Each entry maps to the intended reader and the categories most relevant to them.
     _AUDIENCE_GAP_CONFIGS: dict = {
         "business_user": {
-            "audience_desc": "a business operations user who works with system screens and spreadsheets daily and knows the domain but is not a technical professional",
+            "audience_desc": (
+                "a business operations user who performs these workflows daily and can speak "
+                "to exact screen navigation, field values, real-world exceptions, and "
+                "workarounds from direct hands-on experience"
+            ),
             "categories": [
-                ("Missing Screen and Navigation Details",
-                 "Step-by-step instructions missing exact menu paths, screen names, button labels, or field values that a daily user needs to act"),
-                ("Unclear Data Entry Requirements",
-                 "Fields lack specification of expected values, acceptable formats, validation rules, or required vs. optional status"),
-                ("Missing Error and Exception Guidance",
-                 "What the user should do when the system shows an error, a record cannot be saved, or a validation fails is not explained"),
-                ("Incomplete Workflow Variations",
-                 "Common exceptions, corrections, overrides, or alternate paths that operational staff regularly encounter are not covered"),
+                ("Undocumented Screen and Navigation Steps",
+                 "Exact menu paths, screen names, button labels, or field values the SME uses every day that are missing from the documentation"),
+                ("Undocumented Data Entry Rules",
+                 "Field-level rules the SME knows from experience: accepted values, formats, required vs. optional status, or common entry mistakes and how to avoid them"),
+                ("Undocumented Error Handling and Recovery",
+                 "Error messages or system behaviors the SME has encountered and the recovery steps they take that are not captured in the documentation"),
+                ("Undocumented Workflow Variations and Workarounds",
+                 "Exceptions, corrections, overrides, or alternate paths the SME regularly handles that are absent from the documented process"),
             ],
         },
         "care_coordinator": {
-            "audience_desc": "a care coordinator or clinical staff member familiar with health insurance workflows, medical terminology, and member care processes",
+            "audience_desc": (
+                "a care coordinator or clinical staff member who performs authorizations, "
+                "coordinates member care, and handles clinical decisions and escalations daily"
+            ),
             "categories": [
-                ("Missing Clinical Decision Criteria",
-                 "Clinical eligibility criteria, level-of-care thresholds, or medical necessity guidelines that drive authorization decisions are absent or vague"),
-                ("Incomplete Authorization Workflow",
-                 "Prior auth steps, required turnaround times (TATs), denial reasons, appeal procedures, or peer-to-peer review paths are missing or unclear"),
-                ("Member Impact Gaps",
-                 "Consequences for the member of process steps, delays, denials, or approvals are not described — staff cannot communicate outcomes to members"),
-                ("Regulatory and Compliance Gaps",
-                 "HIPAA requirements, NCQA/URAC standards, state-mandated timeframes, or required documentation for audits and accreditation are absent"),
-                ("Escalation Path Gaps",
-                 "Who to contact for clinical exceptions, urgent authorizations, out-of-network requests, or decisions outside standard workflow is not specified"),
+                ("Undocumented Clinical Decision Criteria",
+                 "The actual eligibility criteria, level-of-care thresholds, or medical necessity rules the SME applies when making authorization decisions"),
+                ("Undocumented Authorization Workflow Steps",
+                 "Prior auth steps, required turnaround times (TATs), denial reasons, appeal procedures, or peer-to-peer review paths the SME follows in daily practice"),
+                ("Undocumented Member Communication Procedures",
+                 "How the SME explains process outcomes, delays, denials, or approvals to members — language, timing, and required disclosures they use"),
+                ("Undocumented Regulatory Requirements",
+                 "HIPAA rules, NCQA/URAC standards, state-mandated timeframes, or audit documentation the SME must follow that are absent from the process"),
+                ("Undocumented Escalation Paths",
+                 "Who the SME contacts for clinical exceptions, urgent authorizations, out-of-network requests, or decisions outside standard workflow"),
             ],
         },
         "compliance": {
-            "audience_desc": "a compliance officer or auditor focused on regulatory requirements, controls, audit trails, and policy adherence",
+            "audience_desc": (
+                "a compliance officer or auditor who knows which regulations apply to this "
+                "process, what controls must exist, and what evidence is required for audits"
+            ),
             "categories": [
-                ("Missing Regulatory Mapping",
-                 "Process steps are not traced to the specific regulation, standard, or internal policy they are designed to satisfy (HIPAA, NCQA, state statute, etc.)"),
-                ("Control Gaps",
-                 "Preventive or detective controls — approvals, validations, segregation of duties — are absent, undocumented, or insufficient for audit purposes"),
-                ("Incomplete Audit Trail Documentation",
-                 "What is logged, who can access logs, how long records are retained, and how evidence is produced for auditors is not specified"),
-                ("Ownership and Accountability Gaps",
-                 "Roles responsible for compliance sign-off, exception approval, or audit-finding remediation are not clearly assigned"),
-                ("Policy Exception Handling Gaps",
-                 "How non-standard cases, policy waivers, or compliance exceptions are documented, approved, and tracked is not addressed"),
+                ("Missing Regulatory Citations",
+                 "Specific regulations, standards, or internal policies (HIPAA, NCQA, state statute) that apply to each process step — the SME can supply the exact citations"),
+                ("Undocumented Control Requirements",
+                 "Preventive or detective controls — approvals, validations, segregation of duties — the SME knows are required but are not documented"),
+                ("Incomplete Audit Trail Specifications",
+                 "What must be logged, who can access logs, retention periods, and how audit evidence is produced — details the SME can specify from compliance requirements"),
+                ("Unassigned Ownership and Accountability",
+                 "Roles the SME knows are responsible for compliance sign-off, exception approval, or audit-finding remediation that are not assigned in the documentation"),
+                ("Undocumented Exception Handling Procedures",
+                 "How the SME handles non-standard cases, policy waivers, or compliance exceptions — approval chains, documentation, and tracking they know from practice"),
             ],
         },
         "trainer": {
-            "audience_desc": "a trainer or instructional designer building classroom, job-aid, or e-learning materials from this content",
+            "audience_desc": (
+                "a trainer or instructional designer who has delivered this training before "
+                "and knows what context learners need, what examples work, and where people "
+                "get confused"
+            ),
             "categories": [
                 ("Missing Learning Objectives",
-                 "What a learner should know or be able to do after each section is not stated — module structure and assessment cannot be built without this"),
-                ("Missing 'Why This Matters' Context",
-                 "The business or clinical reason behind each process step is absent — learners cannot understand or retain steps without motivation"),
-                ("Insufficient Step Granularity",
-                 "Steps are too high-level to teach — no practice activities or knowledge checks can be built from the current level of detail"),
+                 "What a learner needs to be able to do after each section — the trainer knows the skill outcomes even if they are not stated in the source documentation"),
+                ("Missing Business Context and Rationale",
+                 "The 'why' behind each process step that the trainer uses to help learners retain steps — business reasons that are not captured in the documentation"),
+                ("Insufficient Step Granularity for Teaching",
+                 "Steps the trainer knows are too high-level to teach — subtasks or detail that must be added for learners to actually execute the process"),
                 ("Missing Example Scenarios",
-                 "Worked examples, sample cases, or practice scenarios that make abstract steps concrete for learners are not present"),
-                ("Knowledge Check Gaps",
-                 "Comprehension checkpoints at key stages are not identified — training quality and learner readiness cannot be assessed"),
+                 "The real-world examples, sample cases, or practice scenarios the trainer uses in class that are not documented"),
+                ("Knowledge Check Points",
+                 "Where in the process the trainer tests learner understanding before proceeding — checkpoints that are not identified in the documentation"),
             ],
         },
         "claims_adjudicator": {
-            "audience_desc": "a claims adjudicator who processes health insurance claims and needs exact adjudication rules, edit/reason codes, and COB logic",
+            "audience_desc": (
+                "a claims adjudicator who processes claims daily and can speak to the exact "
+                "adjudication rules, edit codes, COB logic, and override procedures they apply"
+            ),
             "categories": [
-                ("Missing Adjudication Rules",
-                 "Specific business rules, clinical edits, or coverage criteria that determine claim approval, denial, or modification are absent or incomplete"),
-                ("Unclear Edit and Reason Code Usage",
-                 "When each edit code or denial reason code applies, what it means to the adjudicator, and what action to take are not documented"),
-                ("Coordination of Benefits Gaps",
-                 "COB method, primary/secondary payer sequencing rules, Medicare/Medicaid crossover handling, or non-duplication logic are missing or ambiguous"),
-                ("Timely Filing and Deadline Gaps",
-                 "Filing deadlines, grace periods, retro-adjustment windows, and late-submission override procedures are not specified"),
-                ("Override and Manual Review Gaps",
-                 "When to escalate to manual review, what documentation is required, and who has approval authority for overrides is not documented"),
+                ("Undocumented Adjudication Rules",
+                 "Specific business rules, clinical edits, or coverage criteria the adjudicator applies daily that are absent or incomplete in the documentation"),
+                ("Undocumented Edit and Reason Code Usage",
+                 "When each edit or denial code applies and what action the adjudicator takes — operational knowledge the SME can provide from daily practice"),
+                ("Undocumented COB and Payer Sequencing Logic",
+                 "COB method, primary/secondary payer sequencing, Medicare/Medicaid crossover handling, or non-duplication logic the adjudicator knows from experience"),
+                ("Undocumented Filing Deadlines and Override Procedures",
+                 "Timely filing windows, retro-adjustment limits, and late-submission override procedures the adjudicator handles that are not specified"),
+                ("Undocumented Manual Review and Escalation Criteria",
+                 "When to escalate, what documentation the adjudicator gathers, and who has approval authority for overrides — the SME's firsthand escalation knowledge"),
             ],
         },
         "member_services": {
-            "audience_desc": "a member services representative answering member calls who needs fast-lookup summaries, escalation scripts, and member-facing explanations",
+            "audience_desc": (
+                "a member services representative who answers member calls daily and knows "
+                "the member-facing explanations, escalation paths, timelines, and talking "
+                "points they use"
+            ),
             "categories": [
-                ("Missing Member-Facing Explanations",
-                 "How to explain process outcomes (approvals, denials, pending) to a member in plain language is not provided"),
-                ("Escalation Path Gaps",
-                 "When to escalate, who to transfer to, and what information to gather and summarize before the handoff are not documented"),
-                ("Turnaround Time and Timeline Gaps",
-                 "How long processes take, when members can expect letters or callbacks, and what to tell members who are waiting are not specified"),
-                ("Script and Talking-Point Gaps",
-                 "Standard responses to common member questions, objections, or complaints about coverage, denials, or claims status are absent"),
-                ("Benefit Explanation Gaps",
-                 "Coverage limits, exclusions, cost-share rules, or network restrictions that members frequently ask about are not clearly documented in member-friendly terms"),
+                ("Undocumented Member-Facing Explanations",
+                 "How the SME explains process outcomes — approvals, denials, pending status — to members in plain language, including standard scripts they use"),
+                ("Undocumented Escalation Paths",
+                 "When the SME escalates, who they transfer to, and what information they gather before the handoff — operational knowledge not captured in the documentation"),
+                ("Undocumented Turnaround Times and Timelines",
+                 "Actual timeframes the SME quotes to members (letters, callbacks, decisions) that are not specified in the process documentation"),
+                ("Undocumented Talking Points",
+                 "Standard responses the SME uses for common member questions, objections, or complaints about coverage, denials, or claims status"),
+                ("Undocumented Benefit and Coverage Details",
+                 "Coverage limits, exclusions, cost-share rules, or network restrictions the SME explains to members that are not clearly documented"),
             ],
         },
         "new_employee": {
-            "audience_desc": "a new employee with no prior knowledge of these systems or business domain",
+            "audience_desc": (
+                "a team lead, process owner, or trainer responsible for onboarding new staff — "
+                "someone who knows the complete process end-to-end and can fill in what new "
+                "employees need to know but the documentation leaves out"
+            ),
             "categories": [
-                ("Missing Process Steps",
-                 "Steps that are absent, incomplete, out of order, or have unclear triggers or outcomes"),
-                ("Unclear Terminology",
-                 "Acronyms, system names, or jargon used without explanation that a newcomer would not know"),
-                ("Missing Prerequisites",
-                 "Knowledge, system access, approvals, or tools needed before starting that are never mentioned"),
-                ("Incomplete Workflows",
-                 "Workflows or hand-offs that lack a clear start, end, decision point, or responsible person"),
+                ("Missing or Incomplete Process Steps",
+                 "Steps that are absent, sequenced incorrectly, or lack clear triggers and outcomes — the trainer knows the correct full sequence new staff must follow"),
+                ("Unexplained Terminology and Jargon",
+                 "Acronyms, system names, or domain terms used without explanation — the trainer knows the plain-language definitions they give to every new hire"),
+                ("Undocumented Prerequisites and Setup",
+                 "System access, approvals, tools, or background knowledge new staff need before starting that the trainer covers during onboarding but are not in the docs"),
+                ("Incomplete Workflows and Handoffs",
+                 "Workflows or handoffs that lack a clear start, end, decision point, or responsible person — gaps the trainer fills in during orientation that should be documented"),
             ],
         },
         "business": {
-            "audience_desc": "a business executive or manager focused on outcomes and organizational effectiveness",
+            "audience_desc": (
+                "a business executive or manager who owns or oversees this process and can "
+                "speak to its strategic purpose, performance expectations, ownership, and "
+                "improvement priorities"
+            ),
             "categories": [
-                ("Process Inefficiencies",
-                 "Bottlenecks, redundant steps, or manual activities that could be automated or streamlined"),
-                ("Missing Performance Metrics",
-                 "Absent KPIs, SLAs, throughput targets, or success criteria that management needs to track health"),
-                ("Compliance and Audit Gaps",
-                 "Regulatory requirements, audit trails, approval controls, or reporting obligations not addressed"),
-                ("Stakeholder and Ownership Gaps",
-                 "Decisions, outputs, or processes with no clearly assigned owner, team, or accountable party"),
+                ("Undocumented Process Inefficiencies",
+                 "Bottlenecks, redundant steps, or manual activities the executive has identified as improvement targets that are not reflected in the documentation"),
+                ("Missing Performance Metrics and Targets",
+                 "KPIs, SLAs, throughput targets, or success criteria the executive tracks or expects that are absent from the process documentation"),
+                ("Undocumented Compliance and Oversight Requirements",
+                 "Regulatory obligations, audit controls, or reporting requirements the executive knows apply to this process that are not addressed"),
+                ("Unassigned Stakeholder Ownership",
+                 "Decisions, outputs, or process stages the executive knows have an owner but where accountability is not documented"),
             ],
         },
         "developer": {
-            "audience_desc": "a software developer or engineer responsible for implementation or maintenance",
+            "audience_desc": (
+                "a software developer or engineer who built, maintains, or has worked closely "
+                "with these systems and can provide technical implementation details from "
+                "firsthand knowledge"
+            ),
             "categories": [
-                ("Undefined Technical Dependencies",
-                 "Libraries, services, APIs, environment variables, or external systems referenced but undocumented"),
-                ("Error Handling Gaps",
-                 "Missing exception handling, retry logic, rollback procedures, or documented failure recovery paths"),
-                ("Security Vulnerabilities",
-                 "Authentication, authorization, input validation, encryption, or sensitive data exposure concerns"),
-                ("Missing System Integrations",
-                 "Undocumented or incompletely specified interfaces with external systems or services"),
-                ("Data Transformation Gaps",
-                 "Unclear data mappings, type conversions, validation rules, or business logic encodings"),
+                ("Undocumented Technical Dependencies",
+                 "Libraries, services, APIs, environment variables, or external systems the developer knows are required but are not documented"),
+                ("Undocumented Error Handling",
+                 "Exception handling, retry logic, rollback procedures, or failure recovery paths the developer knows exist but are not described"),
+                ("Undocumented Security and Access Control Details",
+                 "Authentication, authorization, input validation, or data protection details the developer knows are implemented but undocumented"),
+                ("Undocumented System Integrations",
+                 "Interface specifications, message formats, or integration patterns the developer knows from implementation that are absent or incomplete"),
+                ("Undocumented Data Transformations",
+                 "Data mappings, type conversions, validation rules, or business logic encodings the developer knows from the codebase that are not captured"),
             ],
         },
         "expert": {
-            "audience_desc": "a subject matter expert with deep domain and technical knowledge",
+            "audience_desc": (
+                "a subject matter expert with deep domain and technical knowledge who can "
+                "provide precise specifications, edge case handling, and implementation "
+                "details from authoritative firsthand experience"
+            ),
             "categories": [
-                ("Technical Specification Gaps",
-                 "Insufficient precision for implementation, testing, or audit — missing formats, constraints, or limits"),
-                ("Data Flow Gaps",
-                 "Incomplete data lineage, missing volume/frequency information, or untraced transformation logic"),
-                ("Cross-System Integration Gaps",
-                 "Incomplete interface specifications, message formats, sequencing rules, or inter-system error protocols"),
-                ("Business Rule Exceptions",
-                 "Special cases, override conditions, seasonal variations, or edge policies absent from the main flow"),
-                ("Performance and Scalability Gaps",
-                 "No guidance on throughput limits, peak load handling, concurrency rules, or scaling thresholds"),
+                ("Missing Technical Specifications",
+                 "Precise formats, constraints, limits, or implementation details the expert knows are required but are absent from the documentation"),
+                ("Incomplete Data Flow Details",
+                 "Data lineage, volume/frequency information, or transformation logic the expert can trace from direct knowledge that is missing"),
+                ("Undocumented Cross-System Integration Details",
+                 "Interface specifications, message formats, sequencing rules, or inter-system error protocols the expert knows from hands-on experience"),
+                ("Undocumented Business Rule Exceptions",
+                 "Special cases, override conditions, seasonal variations, or edge policies the expert knows exist but are absent from the main documented flow"),
+                ("Undocumented Performance and Scalability Requirements",
+                 "Throughput limits, peak load handling, concurrency rules, or scaling thresholds the expert knows from operational experience"),
             ],
         },
     }
@@ -377,31 +414,33 @@ DEPENDENCIES:
                 + hint_lines
             )
 
-        return f"""You are performing a gap analysis on a process document for a specific audience.
+        return f"""You are performing a gap analysis to identify documentation gaps that a subject matter expert (SME) can fill in an interview.
 
-Target audience: {audience_desc}
-Focus your analysis on what this audience would need but finds missing or unclear.
+SME being interviewed: {audience_desc}
+
+Your goal is to identify what is MISSING from this documentation that THIS SPECIFIC SME would know from their daily role and firsthand experience. Every gap you identify must be something this SME could answer in an interview — not something that would require a different role, a different system, or knowledge outside their domain.
 
 Return a JSON object with this exact structure:
 {{
   "gaps": [
-    {{"category": "Category Name", "description": "Specific, concrete gap — name the step/system/doc affected"}}
+    {{"category": "Category Name", "description": "Specific, concrete gap — name the step/system/doc affected, and why this SME would know the answer"}}
   ],
   "edge_cases": [
-    "Specific boundary condition, unusual input, failure scenario, or unaddressed exception path"
+    "Specific boundary condition, unusual input, failure scenario, or unaddressed exception path this SME would know from their work"
   ],
   "resource_gaps": [
-    "Specific missing role, unassigned ownership, or undefined team responsibility"
+    "Specific missing role, unassigned ownership, or undefined team responsibility this SME can clarify"
   ]
 }}
 
-Audience-relevant categories to analyze (identify ALL gaps — no minimum or maximum per category):
+Categories of gaps this SME can fill (identify ALL gaps — no minimum or maximum per category):
 {categories_block}
 
 Rules:
 - Be specific: name the actual process step, document section, or system where each gap exists
+- Only include gaps this specific SME would have firsthand knowledge to answer from their role — exclude gaps that belong to a different persona (e.g. do not flag developer-level technical gaps for a business user SME)
 - Only report real gaps found in this document — do not include generic placeholder text
-- If a category has no gaps for this audience, omit it from "gaps" entirely
+- If a category has no gaps this SME can fill, omit it from "gaps" entirely
 - "edge_cases" and "resource_gaps" must always appear in the output (use [] if genuinely none found)
 {edge_hint}
 

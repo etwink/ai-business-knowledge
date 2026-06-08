@@ -19,7 +19,7 @@ _MAX_DOC_CHARS = 8_000   # how much of the reference doc to feed into Pass 2
 
 # Human-readable labels shown in the UI audience selector.
 AUDIENCE_LABELS: dict[str, str] = {
-    "new_employee":       "New Employee / No Prior Knowledge",
+    "new_employee":       "New Employee Onboarding (Team Lead / Trainer as SME)",
     "business_user":      "Business User / Operations Staff",
     "expert":             "Subject Matter Expert",
     "business":           "Executive / Management",
@@ -35,7 +35,7 @@ AUDIENCE_LABELS: dict[str, str] = {
 # One-line plain-English description of each audience — shown in the UI so the
 # user can confirm the LLM will write for the right reader.
 AUDIENCE_DESCRIPTIONS: dict[str, str] = {
-    "new_employee":       "a new employee with no prior knowledge of these systems or business domain",
+    "new_employee":       "interviews a team lead, process owner, or trainer who onboards new staff — they know the complete process end-to-end and fill in what newcomers need but the docs leave out",
     "business_user":      "a business operations user who works with screens and spreadsheets daily and knows the domain well but is not a technical professional",
     "expert":             "a subject matter expert with deep domain and technical knowledge",
     "business":           "an executive or manager who needs to understand outcomes, risks, and decisions — not technical implementation details",
@@ -169,7 +169,8 @@ AUDIENCE_NOTES: dict[str, str] = {
     ),
     "new_employee": (
         "IMPORTANT — Audience: People on their very first day — zero prior knowledge of "
-        "these systems, processes, or business domain.\n\n"
+        "these systems, processes, or business domain. The document is written FOR new "
+        "employees; gaps are filled by interviewing the team lead or trainer who onboards them.\n\n"
         "WRITING RULES:\n"
         "• Define EVERY term on first use — never assume the reader knows acronyms, system "
         "names, or internal jargon\n"
