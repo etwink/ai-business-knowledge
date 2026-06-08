@@ -4,6 +4,7 @@ from typing import Optional
 from openai import AzureOpenAI
 import config
 from .llm_logger import log_call
+from .usage_tracker import tracker as _usage_tracker
 
 # Reasoning models consume tokens internally before producing output.
 # Callers express desired *output* tokens; the client scales up to cover the chain.
@@ -68,6 +69,13 @@ class AzureLLMClient:
         )
 
         log_call("query", input_messages, response.output_text, self.deployment_name, budgeted)
+        if response.usage:
+            _usage_tracker.record(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                reasoning_tokens=getattr(response.usage, "output_tokens_details", None)
+                    and getattr(response.usage.output_tokens_details, "reasoning_tokens", 0) or 0,
+            )
         return response.output_text
 
     def query_raw(
@@ -85,6 +93,13 @@ class AzureLLMClient:
             max_output_tokens=budgeted,
         )
         log_call("query_raw", input_messages, response.output_text, self.deployment_name, budgeted)
+        if response.usage:
+            _usage_tracker.record(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                reasoning_tokens=getattr(response.usage, "output_tokens_details", None)
+                    and getattr(response.usage.output_tokens_details, "reasoning_tokens", 0) or 0,
+            )
         return response.output_text
 
     def query_with_context(

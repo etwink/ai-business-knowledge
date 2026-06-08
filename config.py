@@ -62,6 +62,14 @@ RAG_CLUSTER_TECHNICAL_K= int(os.getenv("RAG_CLUSTER_TECHNICAL_K","3"))  # cluste
 RAG_CLUSTER_RAW_K      = int(os.getenv("RAG_CLUSTER_RAW_K",      "8"))  # raw code chunks per expanded cluster
 RAG_MAX_ITERATIONS     = int(os.getenv("RAG_MAX_ITERATIONS",      "4"))  # retrieval-filter-check cycles
 
+# ---------------------------------------------------------------------------
+# LLM cost tracking
+# Set these to the per-million-token prices for your deployed model.
+# ---------------------------------------------------------------------------
+LLM_INPUT_PPM = float(os.getenv("LLM_INPUT_PPM", "0.15"))   # $ per 1 M input tokens
+LLM_OUTPUT_PPM = float(os.getenv("LLM_OUTPUT_PPM", "0.60"))  # $ per 1 M output tokens
+
+
 def validate_config():
     """Validate that all required configuration is set."""
     if not AZURE_OPENAI_API_KEY:

@@ -23,6 +23,7 @@ from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
 from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
 from src.rag import KnowledgeBase, RAGAgent
+from src.llm_integration import llm_usage_tracker
 import config
 
 
@@ -84,6 +85,7 @@ def _ensure_session() -> str:
     """Return current session name, auto-creating a timestamped one if not set."""
     if not st.session_state.current_session:
         st.session_state.current_session = f"session_{datetime.now().strftime('%Y%m%d_%H%M%S')}"
+    llm_usage_tracker.start_session(st.session_state.current_session)
     return st.session_state.current_session
 
 
@@ -219,6 +221,7 @@ def render_sidebar():
                             ]
                         st.session_state.document_updates = doc_updates
 
+                    llm_usage_tracker.load_session(selected_session)
                     st.success(f"Loaded session: {selected_session}")
                     st.rerun()
                 except Exception as e:
@@ -262,6 +265,22 @@ def render_sidebar():
         st.subheader("Settings")
         api_status = "✅ Configured" if config.AZURE_OPENAI_API_KEY else "❌ Not configured"
         st.write(f"Azure OpenAI: {api_status}")
+
+        # LLM cost tracker
+        st.divider()
+        usage = llm_usage_tracker.get_totals()
+        if usage["total_calls"] > 0:
+            st.caption("**LLM Usage (this session)**")
+            c1, c2 = st.columns(2)
+            c1.metric("Input tokens", f"{usage['total_input_tokens']:,}")
+            c2.metric("Output tokens", f"{usage['total_output_tokens']:,}")
+            st.caption(
+                f"~**${usage['approximate_cost_usd']:.4f}** "
+                f"({usage['total_calls']} calls) "
+                f"— saved to `logs/usage_{usage['session_name']}.json`"
+            )
+        else:
+            st.caption("LLM usage: no calls yet this session.")
 
         return page
 
