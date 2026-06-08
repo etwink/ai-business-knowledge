@@ -298,7 +298,7 @@ def render_sidebar():
                 "Analyze",
                 "Review Process Document",
                 "Gap Analysis",
-                "Chat",
+                "Gap-Filling Chat",
                 "Knowledge Chat",
             ]
         )
@@ -1144,6 +1144,21 @@ def render_gap_analysis_page():
             else:
                 st.info("No resource gaps identified.")
 
+        st.divider()
+        _aud_key = st.session_state.get("doc_audience", "new_employee")
+        _aud_label = AUDIENCE_LABELS.get(_aud_key, _aud_key)
+        st.download_button(
+            "📥 Download Gap Analysis (Word)",
+            data=_gap_analysis_to_word_bytes(
+                gaps,
+                st.session_state.process_document,
+                st.session_state.current_session or "",
+                audience_label=_aud_label,
+            ),
+            file_name="gap_analysis.docx",
+            mime="application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+        )
+
 
 def render_chat_page():
     """Conversational gap-filling chat with the AI agent."""
@@ -1276,41 +1291,8 @@ def render_chat_page():
 
 
 def _render_chat_column(agent) -> None:
-    """Reset button, mode/detail selectors, chat history, document updates sidebar, and chat input."""
-    _gap_mode_col, _gap_detail_col, _gap_reset_col = st.columns([2, 2, 1])
-    with _gap_mode_col:
-        _gap_current_mode = st.session_state.get("response_mode", "standard")
-        st.radio(
-            "Response mode",
-            options=list(RESPONSE_MODE_LABELS.keys()),
-            format_func=lambda k: RESPONSE_MODE_LABELS[k],
-            index=list(RESPONSE_MODE_LABELS.keys()).index(_gap_current_mode),
-            horizontal=True,
-            key="response_mode",
-            help=(
-                "Quick Summary — brief overview only  |  "
-                "Standard — balanced detail  |  "
-                "Step-by-Step Guide — numbered actions with exact screen/field details"
-            ),
-        )
-    with _gap_detail_col:
-        _gap_current_detail = st.session_state.get("detail_level", "standard")
-        st.radio(
-            "Detail level",
-            options=list(DETAIL_LEVEL_LABELS.keys()),
-            format_func=lambda k: DETAIL_LEVEL_LABELS[k],
-            index=list(DETAIL_LEVEL_LABELS.keys()).index(_gap_current_detail),
-            horizontal=True,
-            key="detail_level",
-            help=(
-                "Overview — major phases only  |  "
-                "Standard — named screens and key fields  |  "
-                "In-Depth — every field, exact values, system responses"
-            ),
-        )
-    # Sync both controls to the live agent without reinitialising
-    agent._response_mode = st.session_state.get("response_mode", "standard")
-    agent._detail_level = st.session_state.get("detail_level", "standard")
+    """Reset button, chat history, document updates sidebar, and chat input."""
+    _gap_reset_col, _ = st.columns([1, 5])
     with _gap_reset_col:
         if st.button("🔄 Reset Chat"):
             st.session_state.chat_agent = None
@@ -1450,6 +1432,179 @@ def _render_chat_column(agent) -> None:
 
             st.rerun()
 
+
+
+def _find_process_doc_excerpts(
+    gap_desc: str,
+    process_doc: "ProcessDocument",
+    max_excerpts: int = 3,
+) -> list[tuple[str, str]]:
+    """Return up to max_excerpts (section_label, sentence) pairs from the process document
+    that are most relevant to gap_desc, using keyword overlap scoring."""
+    import re
+
+    SECTIONS = [
+        ("Overview", process_doc.overview),
+        ("Integrated Processes", process_doc.integrated_processes),
+        ("Dependencies", process_doc.dependencies),
+        ("Data Flow", process_doc.data_flow),
+        ("Decision Points", process_doc.decision_points),
+        ("Systems & Components", process_doc.systems_and_components),
+        ("Appendix", process_doc.appendix),
+    ]
+
+    stop_words = {
+        "the", "a", "an", "and", "or", "but", "in", "on", "at", "to", "for",
+        "of", "with", "is", "are", "was", "were", "be", "been", "it", "this",
+        "that", "as", "by", "from", "not", "no", "have", "has", "had", "will",
+    }
+    gap_words = {
+        w.lower() for w in re.findall(r"\b\w+\b", gap_desc) if w.lower() not in stop_words and len(w) > 3
+    }
+    if not gap_words:
+        return []
+
+    scored: list[tuple[float, str, str]] = []
+    for label, text in SECTIONS:
+        if not text:
+            continue
+        sentences = re.split(r"(?<=[.!?])\s+", text)
+        for sent in sentences:
+            sent = sent.strip()
+            if len(sent) < 20:
+                continue
+            sent_words = {w.lower() for w in re.findall(r"\b\w+\b", sent) if w.lower() not in stop_words}
+            overlap = len(gap_words & sent_words) / max(len(gap_words), 1)
+            if overlap > 0:
+                scored.append((overlap, label, sent))
+
+    scored.sort(key=lambda x: x[0], reverse=True)
+    seen: set[str] = set()
+    results: list[tuple[str, str]] = []
+    for _, label, sent in scored:
+        key = sent[:80]
+        if key not in seen:
+            seen.add(key)
+            results.append((label, sent))
+        if len(results) >= max_excerpts:
+            break
+    return results
+
+
+def _gap_analysis_to_word_bytes(
+    gap_analysis: "GapAnalysis",
+    process_doc: "ProcessDocument",
+    session_name: str,
+    audience_label: str = "",
+) -> bytes:
+    """Build a Word document from gap analysis results with source passages."""
+    import io
+    from docx import Document as DocxDocument
+    from docx.shared import Pt
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    def _set_cell_bg(cell, hex_color: str) -> None:
+        tc = cell._tc
+        tcPr = tc.get_or_add_tcPr()
+        shd = OxmlElement("w:shd")
+        shd.set(qn("w:val"), "clear")
+        shd.set(qn("w:color"), "auto")
+        shd.set(qn("w:fill"), hex_color)
+        tcPr.append(shd)
+
+    def _importance_label(score: int) -> tuple[str, str]:
+        if score >= 8:
+            return "Critical", "FF4444"
+        elif score >= 6:
+            return "High", "FF8C00"
+        elif score >= 4:
+            return "Medium", "FFD700"
+        else:
+            return "Low", "4CAF50"
+
+    d = DocxDocument()
+    d.add_heading("Gap Analysis Report", 0)
+
+    meta = d.add_paragraph()
+    meta.add_run(f"Session: ").bold = True
+    meta.add_run(session_name or "—")
+    meta.add_run(f"   |   Date: ").bold = True
+    meta.add_run(datetime.now().strftime("%Y-%m-%d"))
+    if audience_label:
+        meta.add_run(f"   |   Audience: ").bold = True
+        meta.add_run(audience_label)
+
+    # ── Ranked Gaps ──────────────────────────────────────────────────────────
+    d.add_heading("Ranked Gaps", level=1)
+    if gap_analysis.ranked_gaps:
+        for g in gap_analysis.ranked_gaps:
+            score = g.get("importance", 5)
+            cat = g.get("category", "")
+            desc = g.get("description", "")
+            level_label, hex_color = _importance_label(score)
+
+            tbl = d.add_table(rows=1, cols=3)
+            tbl.style = "Table Grid"
+            hdr_row = tbl.rows[0]
+            hdr_row.cells[0].text = f"{score}/10"
+            hdr_row.cells[1].text = level_label
+            hdr_row.cells[2].text = cat
+            _set_cell_bg(hdr_row.cells[0], hex_color)
+            _set_cell_bg(hdr_row.cells[1], hex_color)
+            for cell in hdr_row.cells:
+                for para in cell.paragraphs:
+                    for run in para.runs:
+                        run.bold = True
+                        run.font.size = Pt(9)
+
+            desc_para = d.add_paragraph(desc)
+            desc_para.paragraph_format.left_indent = Pt(12)
+
+            excerpts = _find_process_doc_excerpts(desc, process_doc)
+            if excerpts:
+                src_heading = d.add_paragraph()
+                src_run = src_heading.add_run("Source passages:")
+                src_run.italic = True
+                src_run.font.size = Pt(9)
+                src_heading.paragraph_format.left_indent = Pt(12)
+                for section_label, passage in excerpts:
+                    p = d.add_paragraph(style="List Bullet")
+                    p.paragraph_format.left_indent = Pt(24)
+                    lbl = p.add_run(f"[{section_label}] ")
+                    lbl.bold = True
+                    lbl.font.size = Pt(9)
+                    txt = p.add_run(passage)
+                    txt.font.size = Pt(9)
+
+            d.add_paragraph()
+
+    # ── Edge Cases ────────────────────────────────────────────────────────────
+    if gap_analysis.edge_cases:
+        d.add_heading("Edge Cases", level=1)
+        for ec in gap_analysis.edge_cases:
+            p = d.add_paragraph(style="List Bullet")
+            p.add_run(ec)
+            excerpts = _find_process_doc_excerpts(ec, process_doc, max_excerpts=2)
+            if excerpts:
+                for section_label, passage in excerpts:
+                    sub = d.add_paragraph(style="List Bullet 2")
+                    lbl = sub.add_run(f"[{section_label}] ")
+                    lbl.bold = True
+                    lbl.font.size = Pt(9)
+                    txt = sub.add_run(passage)
+                    txt.font.size = Pt(9)
+
+    # ── Resource Gaps ─────────────────────────────────────────────────────────
+    if gap_analysis.resource_gaps:
+        d.add_heading("Resource Gaps", level=1)
+        for rg in gap_analysis.resource_gaps:
+            p = d.add_paragraph(style="List Bullet")
+            p.add_run(rg)
+
+    buf = io.BytesIO()
+    d.save(buf)
+    return buf.getvalue()
 
 
 def _add_content_to_docx(docx, content: str) -> None:
@@ -1941,7 +2096,7 @@ def main():
         render_process_document_page()
     elif page == "Gap Analysis":
         render_gap_analysis_page()
-    elif page == "Chat":
+    elif page == "Gap-Filling Chat":
         render_chat_page()
     elif page == "Knowledge Chat":
         render_knowledge_chat_page()

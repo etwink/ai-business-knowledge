@@ -246,7 +246,7 @@ class GapAnalyzer:
         if context_block:
             prompt = context_block + "\n\n" + prompt
 
-        gap_response = self.llm.query(prompt, max_tokens=5000)
+        gap_response = self.llm.query(prompt, max_tokens=len(doc_text) // 2)  # heuristic: allow half the tokens of the input document for the gap analysis response
         gaps_by_category, edge_cases, resource_gaps = self._parse_gap_response(gap_response)
 
         # Build flat list of all gaps for the ranking pass
