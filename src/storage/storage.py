@@ -268,6 +268,107 @@ class AnalysisStorage:
 
         return updates
 
+    def save_clusters(self, session_name: str, clusters: list) -> Path:
+        """Serialize DocumentCluster list to JSON (Path objects stored as strings)."""
+        session_dir = self.create_session(session_name)
+        data = []
+        for cl in clusters:
+            data.append({
+                "cluster_id": cl.cluster_id,
+                "cluster_name": cl.cluster_name,
+                "cluster_type": cl.cluster_type,
+                "entry_point": cl.entry_point,
+                "cobol_program_names": sorted(cl.cobol_program_names),
+                "cobol_files": [str(p) for p in cl.cobol_files],
+                "doc_files": [str(p) for p in cl.doc_files],
+                "shared_doc_files": [str(p) for p in cl.shared_doc_files],
+            })
+        file_path = session_dir / "clusters.json"
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return file_path
+
+    def load_clusters(self, session_name: str) -> list:
+        """Restore DocumentCluster list; paths that no longer exist are silently dropped."""
+        from src.pipeline.cluster_builder import DocumentCluster
+        session_dir = self.storage_dir / session_name
+        file_path = session_dir / "clusters.json"
+        if not file_path.exists():
+            return []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            clusters = []
+            for d in data:
+                cobol  = [Path(p) for p in d.get("cobol_files", [])      if Path(p).exists()]
+                docs   = [Path(p) for p in d.get("doc_files", [])        if Path(p).exists()]
+                shared = [Path(p) for p in d.get("shared_doc_files", []) if Path(p).exists()]
+                clusters.append(DocumentCluster(
+                    cluster_id=d["cluster_id"],
+                    cluster_name=d["cluster_name"],
+                    cluster_type=d["cluster_type"],
+                    entry_point=d.get("entry_point"),
+                    cobol_program_names=set(d.get("cobol_program_names", [])),
+                    cobol_files=cobol,
+                    doc_files=docs,
+                    shared_doc_files=shared,
+                ))
+            return clusters
+        except Exception:
+            return []
+
+    def save_cluster_summaries(self, session_name: str, summaries: list) -> Path:
+        """Serialize ClusterSummary list to JSON, preserving edge_cases and source_files."""
+        session_dir = self.create_session(session_name)
+        data = []
+        for cs in summaries:
+            data.append({
+                "cluster_id": getattr(cs, "cluster_id", ""),
+                "cluster_name": cs.cluster_name,
+                "cluster_type": getattr(cs, "cluster_type", ""),
+                "summary": cs.summary,
+                "technical_summary": getattr(cs, "technical_summary", ""),
+                "key_processes": cs.key_processes,
+                "systems_mentioned": cs.systems_mentioned,
+                "file_count": cs.file_count,
+                "entry_point": getattr(cs, "entry_point", None),
+                "edge_cases": getattr(cs, "edge_cases", []),
+                "source_files": getattr(cs, "source_files", []),
+            })
+        file_path = session_dir / "cluster_summaries.json"
+        with open(file_path, 'w', encoding='utf-8') as f:
+            json.dump(data, f, indent=2, ensure_ascii=False)
+        return file_path
+
+    def load_cluster_summaries(self, session_name: str) -> list:
+        """Restore ClusterSummary list."""
+        from src.pipeline.hierarchical_summarizer import ClusterSummary
+        session_dir = self.storage_dir / session_name
+        file_path = session_dir / "cluster_summaries.json"
+        if not file_path.exists():
+            return []
+        try:
+            with open(file_path, 'r', encoding='utf-8') as f:
+                data = json.load(f)
+            summaries = []
+            for d in data:
+                summaries.append(ClusterSummary(
+                    cluster_id=d.get("cluster_id", ""),
+                    cluster_name=d["cluster_name"],
+                    cluster_type=d.get("cluster_type", ""),
+                    summary=d["summary"],
+                    technical_summary=d.get("technical_summary", ""),
+                    key_processes=d.get("key_processes", []),
+                    systems_mentioned=d.get("systems_mentioned", []),
+                    file_count=d.get("file_count", 0),
+                    entry_point=d.get("entry_point"),
+                    edge_cases=d.get("edge_cases", []),
+                    source_files=d.get("source_files", []),
+                ))
+            return summaries
+        except Exception:
+            return []
+
     def delete_session(self, session_name: str) -> None:
         """Delete a session and all its files."""
         session_dir = self.storage_dir / session_name

@@ -83,9 +83,7 @@ def initialize_session():
 
 def _save_session_settings() -> None:
     """Persist audience selection and process context for the current session."""
-    session_name = st.session_state.get("current_session")
-    if not session_name:
-        return
+    session_name = st.session_state.get("current_session") or _ensure_session()
     ctx = st.session_state.get("process_context")
     settings = {
         "doc_audience": st.session_state.get("doc_audience", "new_employee"),
@@ -257,6 +255,14 @@ def render_sidebar():
                                 additional_notes=_pc.get('additional_notes', ''),
                             )
 
+                    # Restore clusters and cluster summaries (expensive to rebuild)
+                    _loaded_clusters = st.session_state.storage.load_clusters(selected_session)
+                    if _loaded_clusters:
+                        st.session_state.bulk_clusters = _loaded_clusters
+                    _loaded_summaries = st.session_state.storage.load_cluster_summaries(selected_session)
+                    if _loaded_summaries:
+                        st.session_state.bulk_cluster_summaries = _loaded_summaries
+
                     llm_usage_tracker.load_session(selected_session)
                     st.success(f"Loaded session: {selected_session}")
                     st.rerun()
@@ -417,142 +423,143 @@ def render_group_documents_page():
 
     files_ready = (scanned and scanned.total_count > 0) or bool(st.session_state.uploaded_files)
 
-    # ── Step 2: Define Context ────────────────────────────────────────────────
-    if files_ready:
-        st.divider()
-        st.subheader("Step 2 — Define Context (Optional but Recommended)")
-        st.write(
-            "Providing context helps the LLM understand the business domain and produce "
-            "more accurate clusters and document sections. You can reference a specific "
-            "document by name and the system will read it automatically."
-        )
-        ctx = st.session_state.process_context
-        if ctx and ctx.is_set():
-            with st.expander("✅ Context is set — click to view or change", expanded=False):
-                if ctx.foundation_document:
-                    st.write(f"**Foundation document:** {ctx.foundation_document}")
-                if ctx.process_description:
-                    st.write("**Process description:**")
-                    st.write(ctx.process_description)
-                if ctx.additional_notes:
-                    st.write("**Additional notes:**")
-                    st.write(ctx.additional_notes)
-                if st.button("✏️ Clear and re-set context", key="group_clear_ctx"):
-                    st.session_state.process_context = None
-                    _save_session_settings()
-                    st.rerun()
-        else:
-            with st.expander("Set context now", expanded=True):
-                quick_ctx = st.text_area(
-                    "Describe the process — optionally reference a document by name as a foundation",
-                    placeholder=(
-                        "e.g. 'Payroll processing system for a mid-size manufacturer on IBM z/OS. "
-                        "Use PAYROLL_OVERVIEW.docx as the foundation document.'"
-                    ),
-                    height=100,
-                    key="group_quick_ctx",
-                )
-                if st.button("🔍 Extract Context", key="group_save_ctx") and quick_ctx.strip():
-                    # Build list of Path objects for document detection
-                    if scanned:
-                        available_paths = scanned.cobol + scanned.code + scanned.word + scanned.excel
-                    else:
-                        available_paths = [
-                            f for f in st.session_state.uploaded_files if isinstance(f, Path)
-                        ]
-
-                    ctx_agent = ProcessContextAgent(available_paths)
-
-                    with st.spinner("Pass 1 — Checking for reference document…"):
-                        detected_doc = ctx_agent._identify_reference_doc(quick_ctx.strip())
-
-                    doc_content = ""
-                    if detected_doc:
-                        with st.spinner(f"Reading {detected_doc}…"):
-                            doc_content = ctx_agent._read_doc(detected_doc)
-
-                    with st.spinner("Extracting context…"):
-                        ctx_result = ctx_agent._extract_context(
-                            quick_ctx.strip(), doc_content, detected_doc
-                        )
-
-                    st.session_state.process_context = ctx_result
-                    _save_session_settings()
-                    if detected_doc:
-                        st.info(f"📄 Reference document detected and read: **{detected_doc}**")
-                    st.success("Context saved.")
-                    st.rerun()
-
-        # Audience selector — grouped button grid, stages changes until Save is clicked
-        st.write("**Document Audience**")
-        st.caption(
-            "Sets the audience for this session. "
-            "The process document is written **for** this audience. "
-            "Gap analysis finds gaps **this audience (as SME) can answer**. "
-            "Both chat agents talk **to** this audience."
-        )
-        _current_staging = st.session_state.get("_audience_staging", "new_employee")
-        _main_groups = [(g, keys) for g, keys in AUDIENCE_GROUPS.items() if g != "Other"]
-        _other_keys  = AUDIENCE_GROUPS.get("Other", [])
-        _group_cols  = st.columns(len(_main_groups))
-        for _col, (_gname, _gkeys) in zip(_group_cols, _main_groups):
-            with _col:
-                st.caption(f"**{_gname}**")
-                for _key in _gkeys:
-                    if st.button(
-                        AUDIENCE_LABELS[_key],
-                        key=f"_aud_btn_{_key}",
-                        type="primary" if _current_staging == _key else "secondary",
-                        use_container_width=True,
-                    ):
-                        st.session_state._audience_staging = _key
-                        st.rerun()
-        for _key in _other_keys:
-            if st.button(
-                AUDIENCE_LABELS[_key],
-                key=f"_aud_btn_{_key}",
-                type="primary" if _current_staging == _key else "secondary",
-            ):
-                st.session_state._audience_staging = _key
+    # ── Step 2: Define Context & Audience — always visible ───────────────────
+    st.divider()
+    st.subheader("Step 2 — Define Context (Optional but Recommended)")
+    st.write(
+        "Providing context helps the LLM understand the business domain and produce "
+        "more accurate clusters and document sections. You can reference a specific "
+        "document by name and the system will read it automatically."
+    )
+    ctx = st.session_state.process_context
+    if ctx and ctx.is_set():
+        with st.expander("✅ Context is set — click to view or change", expanded=False):
+            if ctx.foundation_document:
+                st.write(f"**Foundation document:** {ctx.foundation_document}")
+            if ctx.process_description:
+                st.write("**Process description:**")
+                st.write(ctx.process_description)
+            if ctx.additional_notes:
+                st.write("**Additional notes:**")
+                st.write(ctx.additional_notes)
+            if st.button("✏️ Clear and re-set context", key="group_clear_ctx"):
+                st.session_state.process_context = None
+                _save_session_settings()
                 st.rerun()
-        _staged_desc = AUDIENCE_DESCRIPTIONS.get(_current_staging, "")
-        if _staged_desc:
-            st.caption(f"*{_staged_desc}*")
-        if st.session_state._audience_staging == "custom":
-            st.text_area(
-                "Describe your audience",
+    else:
+        with st.expander("Set context now", expanded=files_ready):
+            quick_ctx = st.text_area(
+                "Describe the process — optionally reference a document by name as a foundation",
                 placeholder=(
-                    "e.g. 'External auditors with accounting knowledge but no IT background' "
-                    "or 'Call-centre agents who need step-by-step instructions without jargon'"
+                    "e.g. 'Payroll processing system for a mid-size manufacturer on IBM z/OS. "
+                    "Use PAYROLL_OVERVIEW.docx as the foundation document.'"
                 ),
-                height=80,
-                key="_custom_audience_staging",
+                height=100,
+                key="group_quick_ctx",
             )
-        if st.button("💾 Save Audience"):
-            st.session_state.doc_audience = st.session_state._audience_staging
-            if st.session_state._audience_staging == "custom":
-                st.session_state.custom_audience_note = st.session_state.get("_custom_audience_staging", "")
-            _save_session_settings()
+            if not files_ready:
+                st.caption("ℹ️ Load files in Step 1 to enable automatic reference-document detection.")
+            if st.button("🔍 Extract Context", key="group_save_ctx") and quick_ctx.strip():
+                # Build list of Path objects for document detection
+                if scanned:
+                    available_paths = scanned.cobol + scanned.code + scanned.word + scanned.excel
+                else:
+                    available_paths = [
+                        f for f in st.session_state.uploaded_files if isinstance(f, Path)
+                    ]
+
+                ctx_agent = ProcessContextAgent(available_paths)
+
+                with st.spinner("Pass 1 — Checking for reference document…"):
+                    detected_doc = ctx_agent._identify_reference_doc(quick_ctx.strip())
+
+                doc_content = ""
+                if detected_doc:
+                    with st.spinner(f"Reading {detected_doc}…"):
+                        doc_content = ctx_agent._read_doc(detected_doc)
+
+                with st.spinner("Extracting context…"):
+                    ctx_result = ctx_agent._extract_context(
+                        quick_ctx.strip(), doc_content, detected_doc
+                    )
+
+                st.session_state.process_context = ctx_result
+                _save_session_settings()
+                if detected_doc:
+                    st.info(f"📄 Reference document detected and read: **{detected_doc}**")
+                st.success("Context saved.")
+                st.rerun()
+
+    # Audience selector — grouped button grid, stages changes until Save is clicked
+    st.write("**Document Audience**")
+    st.caption(
+        "Sets the audience for this session. "
+        "The process document is written **for** this audience. "
+        "Gap analysis finds gaps **this audience (as SME) can answer**. "
+        "Both chat agents talk **to** this audience."
+    )
+    _current_staging = st.session_state.get("_audience_staging", "new_employee")
+    _main_groups = [(g, keys) for g, keys in AUDIENCE_GROUPS.items() if g != "Other"]
+    _other_keys  = AUDIENCE_GROUPS.get("Other", [])
+    _group_cols  = st.columns(len(_main_groups))
+    for _col, (_gname, _gkeys) in zip(_group_cols, _main_groups):
+        with _col:
+            st.caption(f"**{_gname}**")
+            for _key in _gkeys:
+                if st.button(
+                    AUDIENCE_LABELS[_key],
+                    key=f"_aud_btn_{_key}",
+                    type="primary" if _current_staging == _key else "secondary",
+                    use_container_width=True,
+                ):
+                    st.session_state._audience_staging = _key
+                    st.rerun()
+    for _key in _other_keys:
+        if st.button(
+            AUDIENCE_LABELS[_key],
+            key=f"_aud_btn_{_key}",
+            type="primary" if _current_staging == _key else "secondary",
+        ):
+            st.session_state._audience_staging = _key
             st.rerun()
-        # Show unsaved-changes warning when staging differs from committed value
-        _saved_aud = st.session_state.get("doc_audience", "new_employee")
-        _staged_aud = st.session_state.get("_audience_staging", _saved_aud)
-        _saved_custom = st.session_state.get("custom_audience_note", "")
-        _staged_custom = st.session_state.get("_custom_audience_staging", "")
-        _has_unsaved = _staged_aud != _saved_aud or (
-            _staged_aud == "custom" and _staged_custom != _saved_custom
+    _staged_desc = AUDIENCE_DESCRIPTIONS.get(_current_staging, "")
+    if _staged_desc:
+        st.caption(f"*{_staged_desc}*")
+    if st.session_state._audience_staging == "custom":
+        st.text_area(
+            "Describe your audience",
+            placeholder=(
+                "e.g. 'External auditors with accounting knowledge but no IT background' "
+                "or 'Call-centre agents who need step-by-step instructions without jargon'"
+            ),
+            height=80,
+            key="_custom_audience_staging",
         )
-        if _has_unsaved:
-            _saved_label = AUDIENCE_LABELS.get(_saved_aud, "—")
-            if _saved_aud == "custom":
-                _saved_label = (
-                    (_saved_custom[:50] + "…" if len(_saved_custom) > 50 else _saved_custom)
-                    if _saved_custom else "Custom (not described)"
-                )
-            st.caption(f"⚠️ Unsaved changes — currently saved: **{_saved_label}**")
+    if st.button("💾 Save Audience"):
+        st.session_state.doc_audience = st.session_state._audience_staging
+        if st.session_state._audience_staging == "custom":
+            st.session_state.custom_audience_note = st.session_state.get("_custom_audience_staging", "")
+        _save_session_settings()
+        st.rerun()
+    # Show unsaved-changes warning when staging differs from committed value
+    _saved_aud = st.session_state.get("doc_audience", "new_employee")
+    _staged_aud = st.session_state.get("_audience_staging", _saved_aud)
+    _saved_custom = st.session_state.get("custom_audience_note", "")
+    _staged_custom = st.session_state.get("_custom_audience_staging", "")
+    _has_unsaved = _staged_aud != _saved_aud or (
+        _staged_aud == "custom" and _staged_custom != _saved_custom
+    )
+    if _has_unsaved:
+        _saved_label = AUDIENCE_LABELS.get(_saved_aud, "—")
+        if _saved_aud == "custom":
+            _saved_label = (
+                (_saved_custom[:50] + "…" if len(_saved_custom) > 50 else _saved_custom)
+                if _saved_custom else "Custom (not described)"
+            )
+        st.caption(f"⚠️ Unsaved changes — currently saved: **{_saved_label}**")
 
     # ── Step 3: Build clusters ────────────────────────────────────────────────
-    if files_ready:
+    if files_ready or st.session_state.bulk_clusters:
         st.divider()
         st.subheader("Step 3 — Build Dependency Clusters")
         st.write(
@@ -600,6 +607,12 @@ def render_group_documents_page():
                         context_block=ctx_block,
                     )
                     st.session_state.bulk_cluster_summaries = None
+                    try:
+                        _session = _ensure_session()
+                        st.session_state.storage.save_clusters(_session, st.session_state.bulk_clusters)
+                        _save_session_settings()
+                    except Exception:
+                        pass
                 except Exception as e:
                     st.error(f"Clustering failed: {e}")
 
@@ -692,10 +705,10 @@ def render_group_documents_page():
                     active_slot.empty()
                     done_slot.empty()
                     try:
-                        st.session_state.storage.save_analyses(
-                            _ensure_session(),
-                            st.session_state.analyses,
-                        )
+                        _session = _ensure_session()
+                        st.session_state.storage.save_analyses(_session, st.session_state.analyses)
+                        st.session_state.storage.save_cluster_summaries(_session, summaries)
+                        _save_session_settings()
                         st.success(f"Summarized {len(summaries)} clusters. Saved to session: **{st.session_state.current_session}**")
                     except Exception as e:
                         st.success(f"Summarized {len(summaries)} clusters.")
@@ -740,11 +753,9 @@ def render_group_documents_page():
                 st.session_state.process_document = process_doc
 
                 try:
-                    st.session_state.storage.save_process_document(
-                        _ensure_session(),
-                        process_doc,
-                        version="v1",
-                    )
+                    _session = _ensure_session()
+                    st.session_state.storage.save_process_document(_session, process_doc, version="v1")
+                    _save_session_settings()
                     st.success(f"Process document built and saved to session: **{st.session_state.current_session}**. Navigate to **Review Process Document** to continue.")
                 except Exception as save_err:
                     st.success("Process document built! Navigate to **Review Process Document** to continue.")
@@ -1171,6 +1182,19 @@ def _get_all_source_files() -> list:
     scanned = st.session_state.get("bulk_scanned")
     if scanned:
         return scanned.cobol + scanned.code + scanned.word + scanned.excel
+    # Fall back to file lists derived from loaded clusters (session restore path)
+    clusters = st.session_state.get("bulk_clusters")
+    if clusters:
+        seen: set[str] = set()
+        files: list = []
+        for cl in clusters:
+            for f in cl.cobol_files + cl.doc_files + cl.shared_doc_files:
+                key = str(f)
+                if key not in seen:
+                    seen.add(key)
+                    files.append(f)
+        if files:
+            return files
     uploaded = st.session_state.get("uploaded_files", [])
     return [f for f in uploaded if isinstance(f, Path)]
 
