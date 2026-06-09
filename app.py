@@ -9,16 +9,13 @@ from collections import defaultdict
 import truststore
 truststore.inject_into_ssl()
 
-from src.document_loaders import get_loader
 from src.analyzers import (
-    DocumentAnalyzer,
     ProcessDocumentBuilder,
     GapAnalyzer,
     AnalysisResult,
     ProcessDocument,
     GapAnalysis
 )
-from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
 from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, AUDIENCE_INTERVIEW_NOTES, AUDIENCE_DESCRIPTIONS, AUDIENCE_GROUPS, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
@@ -302,7 +299,6 @@ def render_sidebar():
             "Select a step:",
             [
                 "Group Documents",
-                "Analyze",
                 "Review Process Document",
                 "Gap Analysis",
                 "Gap-Filling Chat",
@@ -771,144 +767,54 @@ def render_group_documents_page():
             )
 
 
-def render_analyze_page():
-    """Render document analysis page."""
-    st.header("🔍 Analyze Documents")
-
-    # If bulk mode was used, analyses are already populated — skip the upload-based flow
-    if st.session_state.bulk_cluster_summaries and not st.session_state.uploaded_files:
-        st.success(
-            f"Analysis complete via Bulk Load — "
-            f"{len(st.session_state.bulk_cluster_summaries)} clusters summarized."
-        )
-        st.info("Navigate to **Review Process Document** to continue the pipeline.")
-        if st.session_state.analyses:
-            st.divider()
-            st.subheader("Cluster Summaries")
-            for analysis in st.session_state.analyses:
-                with st.expander(f"📋 {analysis.document_name}"):
-                    st.write(analysis.summary)
-        return
-
-    if not st.session_state.uploaded_files:
-        st.warning("Please upload documents first (or use **Bulk Load** for large document sets)")
-        return
-
-    if st.button("Start Analysis", type="primary"):
-        with st.spinner("Analyzing documents..."):
-            st.session_state.analyses = []
-            progress_bar = st.progress(0)
-
-            analyzer = DocumentAnalyzer()
-
-            for idx, file in enumerate(st.session_state.uploaded_files):
-                try:
-                    # Get file path
-                    if isinstance(file, Path):
-                        file_path = file
-                    else:
-                        # For uploaded files, we need to save temporarily
-                        import tempfile
-                        with tempfile.NamedTemporaryFile(delete=False, suffix=Path(file.name).suffix) as tmp:
-                            tmp.write(file.read())
-                            file_path = Path(tmp.name)
-
-                    # Validate and load
-                    is_valid, error = validate_file(file_path)
-                    if not is_valid:
-                        st.error(f"Error with {file_path.name}: {error}")
-                        continue
-
-                    # Load document
-                    loader = get_loader(file_path)
-                    doc = loader.load()
-
-                    # Analyze
-                    analysis = analyzer.analyze_document(doc)
-                    st.session_state.analyses.append(analysis)
-
-                    progress_bar.progress((idx + 1) / len(st.session_state.uploaded_files))
-
-                except Exception as e:
-                    st.error(f"Error analyzing {getattr(file, 'name', 'file')}: {str(e)}")
-
-            st.success(f"Analysis complete! {len(st.session_state.analyses)} documents analyzed")
-
-            try:
-                st.session_state.storage.save_analyses(
-                    _ensure_session(),
-                    st.session_state.analyses
-                )
-                st.info(f"✅ Saved to session: **{st.session_state.current_session}**")
-            except Exception as e:
-                st.error(f"Error saving analysis: {str(e)}")
-
-    # Display analysis results
-    if st.session_state.analyses:
-        st.divider()
-        st.subheader("Analysis Results")
-
-        for analysis in st.session_state.analyses:
-            with st.expander(f"📋 {analysis.document_name}"):
-                st.write("**Summary:**")
-                st.write(analysis.summary)
-
-                col1, col2, col3 = st.columns(3)
-                with col1:
-                    st.write("**Key Processes:**")
-                    for process in analysis.key_processes:
-                        st.write(f"- {process}")
-
-                with col2:
-                    st.write("**Systems:**")
-                    for system in analysis.systems_mentioned:
-                        st.write(f"- {system}")
-
-                with col3:
-                    st.write("**Technical Details:**")
-                    for detail in analysis.technical_details:
-                        st.write(f"- {detail}")
 
 
 def render_process_document_page():
     """Render process document review page."""
     st.header("📖 Process Document")
 
-    if not st.session_state.analyses:
-        st.warning("Please complete analysis first")
+    has_summaries = bool(st.session_state.bulk_cluster_summaries)
+    has_doc = bool(st.session_state.process_document)
+
+    if not has_summaries and not has_doc:
+        st.warning(
+            "No cluster summaries available. Complete **Group Documents** steps 3 and 4 first, "
+            "or load a session that already has a process document."
+        )
         return
 
-    if st.button("Generate Process Document", type="primary"):
-        builder = ProcessDocumentBuilder()
-        section_progress = st.progress(0, text="Starting…")
-        section_status = st.empty()
+    if has_summaries:
+        if st.button("Generate Process Document", type="primary"):
+            builder = ProcessDocumentBuilder()
+            section_progress = st.progress(0, text="Starting…")
+            section_status = st.empty()
 
-        def on_pd_section(label, idx, total):
-            section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
-            section_status.write(f"Generating: **{label}**")
+            def on_pd_section(label, idx, total):
+                section_progress.progress(idx / total, text=f"Writing section {idx}/{total}")
+                section_status.write(f"Generating: **{label}**")
 
-        ctx_block = _get_context_block()
-        try:
-            st.session_state.process_document = builder.build_process_document(
-                st.session_state.analyses,
-                progress_callback=on_pd_section,
-                context_block=ctx_block,
-            )
-            section_progress.progress(1.0, text="Done!")
-            section_status.empty()
-
+            ctx_block = _get_context_block()
             try:
-                st.session_state.storage.save_process_document(
-                    _ensure_session(),
-                    st.session_state.process_document,
-                    version="v1"
+                st.session_state.process_document = builder.build_from_cluster_summaries(
+                    st.session_state.bulk_cluster_summaries,
+                    progress_callback=on_pd_section,
+                    context_block=ctx_block,
                 )
-                st.success(f"✅ Process document generated and saved to session: **{st.session_state.current_session}**")
+                section_progress.progress(1.0, text="Done!")
+                section_status.empty()
+
+                try:
+                    st.session_state.storage.save_process_document(
+                        _ensure_session(),
+                        st.session_state.process_document,
+                        version="v1"
+                    )
+                    st.success(f"✅ Process document generated and saved to session: **{st.session_state.current_session}**")
+                except Exception as e:
+                    st.success("✅ Process document generated!")
+                    st.warning(f"Could not save: {e}")
             except Exception as e:
-                st.success("✅ Process document generated!")
-                st.warning(f"Could not save: {e}")
-        except Exception as e:
-            st.error(f"Error generating process document: {str(e)}")
+                st.error(f"Error generating process document: {str(e)}")
 
     if st.session_state.process_document:
         doc = st.session_state.process_document
@@ -1283,9 +1189,6 @@ def render_chat_page():
     """Conversational gap-filling chat with the AI agent."""
     st.header("💬 Gap-Filling Chat")
 
-    if not st.session_state.analyses:
-        st.warning("Please analyze documents first.")
-        return
     if not st.session_state.process_document:
         st.warning("Please generate the process document first.")
         return
@@ -2246,8 +2149,6 @@ def main():
     # Main content
     if page == "Group Documents":
         render_group_documents_page()
-    elif page == "Analyze":
-        render_analyze_page()
     elif page == "Review Process Document":
         render_process_document_page()
     elif page == "Gap Analysis":

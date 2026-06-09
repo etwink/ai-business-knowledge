@@ -175,23 +175,6 @@ class ProcessDocumentBuilder:
         }
         return self._extract_citations_from_document(doc, cluster_sources)
 
-    def build_process_document(
-        self,
-        analyses: List[AnalysisResult],
-        progress_callback=None,  # optional: called with (section_label, idx, total)
-        context_block: str = "",  # from ProcessContext.to_prompt_block()
-    ) -> "ProcessDocument":
-        """Build comprehensive process document from multiple analyses.
-
-        Uses one LLM call per section so reasoning-model token budgets are not
-        exhausted before the final sections are written.
-        """
-        summaries = [analysis.summary for analysis in analyses]
-        return self._build_section_by_section(
-            lambda key: PromptBuilder.build_section_prompt_from_analyses(key, summaries, context_block),
-            progress_callback,
-        )
-
     def _build_section_by_section(self, prompt_fn, progress_callback=None) -> "ProcessDocument":
         """Call the LLM once per section and assemble the results."""
         results: Dict[str, str] = {}

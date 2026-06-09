@@ -582,7 +582,7 @@ Process Document:
     # Appended after the section instruction when building from clusters to enable traceability.
     _CITATION_INSTRUCTION = (
         "CITATION MARKERS: After any sentence (or bullet point) that draws primarily from a "
-        "specific cluster, append [ref:N] at the end (where N is the cluster number shown above, "
+        "specific cluster, append [ref:N] at the end (where N is the cluster number shown above in the `Cluster Summaries` section, "
         "e.g. [ref:3] for Cluster 3). If a sentence synthesizes several clusters, append all "
         "relevant refs (e.g. [ref:1][ref:4]). Omit markers from general synthesis sentences and "
         "from headings. IMPORTANT: use ONLY the format [ref:N] with a plain number — do NOT add "
@@ -657,38 +657,6 @@ Process Document:
             f"{instruction}\n"
             f"{cls._LINGO_CONSTRAINT}"
             f"{citation_block}\n"
-            f"Do not include any other section headers or content. "
-            f"Output plain prose and/or bullet lists — no markdown fences."
-        )
-
-    @classmethod
-    def build_section_prompt_from_analyses(
-        cls, section_key: str, summaries: list[str], context_block: str = ""
-    ) -> str:
-        """Build a prompt for a single process document section using document summaries."""
-        combined = "\n\n".join(f"Document {i+1}:\n{s}" for i, s in enumerate(summaries))
-        instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
-        context_part = f"\n{context_block}\n" if context_block else ""
-
-        if section_key == "process_flow_diagram":
-            return (
-                f"You are generating a process flow diagram for a business process.\n"
-                f"{context_part}\n"
-                f"Document Summaries:\n{combined}\n\n"
-                f"{instruction}"
-            )
-
-        section_label = section_key.replace("_", " ").upper()
-        audience_instruction = cls._AUDIENCE_NOTE if not context_block else ""
-        return (
-            f"You are writing one section of a business process document.\n"
-            f"{audience_instruction}\n"
-            f"{context_part}\n"
-            f"Below are summaries of the analyzed documents.\n\n"
-            f"Document Summaries:\n{combined}\n\n"
-            f"Write ONLY the {section_label} section of the process document.\n"
-            f"{instruction}\n"
-            f"{cls._LINGO_CONSTRAINT}\n"
             f"Do not include any other section headers or content. "
             f"Output plain prose and/or bullet lists — no markdown fences."
         )

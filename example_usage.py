@@ -1,4 +1,14 @@
-"""Example script demonstrating programmatic usage of the Document Analysis System."""
+"""Example script demonstrating programmatic usage of the Document Analysis System.
+
+NOTE: The recommended pipeline is now cluster-based:
+  1. FolderScanner → scan a directory of documents
+  2. ClusterBuilder → group documents into dependency clusters
+  3. HierarchicalSummarizer → summarize each cluster
+  4. ProcessDocumentBuilder.build_from_cluster_summaries() → generate process doc
+
+This script shows a minimal single-document analysis (step 1 equivalent).
+For a full cluster-based pipeline see src/pipeline/.
+"""
 
 from pathlib import Path
 from src.document_loaders import get_loader
@@ -50,15 +60,15 @@ def example_analysis(document_paths):
         return
 
     # Step 2: Generate comprehensive process document
-    print("\n\n📖 STEP 2: Generating comprehensive process document...")
+    # NOTE: The full pipeline uses ClusterBuilder + HierarchicalSummarizer first,
+    # then calls ProcessDocumentBuilder.build_from_cluster_summaries(cluster_summaries).
+    # Direct construction from raw analyses is no longer supported.
+    print("\n\n📖 STEP 2: Process document generation")
     print("-" * 80)
-
-    builder = ProcessDocumentBuilder()
-    process_doc = builder.build_process_document(analyses)
-
-    print("\nProcess Document Generated:")
-    print(f"\nOverview:\n{process_doc.overview[:300]}...")
-    print(f"\nKey Dependencies:\n{process_doc.dependencies[:300]}...")
+    print("  Use the Streamlit app (app.py) or the cluster pipeline in src/pipeline/")
+    print("  to generate a process document from these analyses.")
+    print("  See: ProcessDocumentBuilder.build_from_cluster_summaries()")
+    return
 
     # Step 3: Analyze gaps
     print("\n\n⚠️  STEP 3: Analyzing gaps and missing information...")
