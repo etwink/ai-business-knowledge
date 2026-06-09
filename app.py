@@ -21,7 +21,7 @@ from src.analyzers import (
 from src.utils import validate_file
 from src.storage import AnalysisStorage
 from src.pipeline import ConversationalAgent, DocumentUpdate, ProcessContextAgent
-from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, AUDIENCE_DESCRIPTIONS, AUDIENCE_GROUPS, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
+from src.pipeline.context_agent import AUDIENCE_LABELS, AUDIENCE_NOTES, AUDIENCE_INTERVIEW_NOTES, AUDIENCE_DESCRIPTIONS, AUDIENCE_GROUPS, RESPONSE_MODE_LABELS, DETAIL_LEVEL_LABELS
 from src.rag import KnowledgeBase, RAGAgent
 from src.llm_integration import llm_usage_tracker
 import config
@@ -485,7 +485,12 @@ def render_group_documents_page():
 
         # Audience selector — grouped button grid, stages changes until Save is clicked
         st.write("**Document Audience**")
-        st.caption("Controls the writing style of all generated documentation and chat responses.")
+        st.caption(
+            "Sets the audience for this session. "
+            "The process document is written **for** this audience. "
+            "Gap analysis finds gaps **this audience (as SME) can answer**. "
+            "Both chat agents talk **to** this audience."
+        )
         _current_staging = st.session_state.get("_audience_staging", "new_employee")
         _main_groups = [(g, keys) for g, keys in AUDIENCE_GROUPS.items() if g != "Other"]
         _other_keys  = AUDIENCE_GROUPS.get("Other", [])
@@ -512,7 +517,7 @@ def render_group_documents_page():
                 st.rerun()
         _staged_desc = AUDIENCE_DESCRIPTIONS.get(_current_staging, "")
         if _staged_desc:
-            st.caption(f"The LLM will write for: *{_staged_desc}*")
+            st.caption(f"*{_staged_desc}*")
         if st.session_state._audience_staging == "custom":
             st.text_area(
                 "Describe your audience",
@@ -1294,7 +1299,7 @@ def render_chat_page():
                 process_document=st.session_state.process_document,
                 gap_analysis=st.session_state.gap_analysis,
                 knowledge_base=_kb,
-                audience_note=AUDIENCE_NOTES.get(_audience, ""),
+                audience_note=AUDIENCE_INTERVIEW_NOTES.get(_audience, ""),
                 response_mode=st.session_state.get("response_mode", "standard"),
                 detail_level=st.session_state.get("detail_level", "standard"),
             )

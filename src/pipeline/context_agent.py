@@ -229,6 +229,112 @@ AUDIENCE_NOTES: dict[str, str] = {
     ),
 }
 
+# Interview-framing notes for the gap-filling chat agent.
+# These replace AUDIENCE_NOTES in the ConversationalAgent — they describe WHO the agent
+# is interviewing and HOW to conduct the interview, not how to write a document.
+AUDIENCE_INTERVIEW_NOTES: dict[str, str] = {
+    "business_user": (
+        "IMPORTANT — Interviewee: A business operations user who performs these workflows daily.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask about exact steps: screen names, menu paths, button labels, field values they use every day\n"
+        "• Probe for errors they regularly encounter: 'What happens when X fails? What do you do?'\n"
+        "• Ask about variations: 'Is there anything you do differently from the documented process?'\n"
+        "• Ask about data entry rules from experience: acceptable values, validation errors, required vs. optional\n"
+        "• Use business/operational language — they know the domain but not IT internals\n"
+        "• Ask about workarounds: 'Are there unofficial steps or shortcuts that aren't written down anywhere?'"
+    ),
+    "care_coordinator": (
+        "IMPORTANT — Interviewee: A care coordinator or clinical staff member who handles authorizations and member care daily.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask about the clinical criteria they actually apply when making authorization decisions\n"
+        "• Probe the full auth workflow: turnaround times, denial reasons, appeal steps, peer-to-peer review triggers\n"
+        "• Ask how they communicate outcomes to members: 'What exactly do you tell a member when their auth is denied?'\n"
+        "• Ask about regulatory requirements and deadlines they track in daily work\n"
+        "• Ask 'Who do you escalate to when a case is outside normal workflow? What triggers that?'\n"
+        "• Clinical and health insurance terminology is appropriate and expected"
+    ),
+    "compliance": (
+        "IMPORTANT — Interviewee: A compliance officer or auditor who knows the regulatory requirements for this process.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask which specific regulations, standards, or policies apply to each process step\n"
+        "• Probe for controls: 'What approvals are required here? Who can authorize an exception?'\n"
+        "• Ask what evidence must be logged and retained: 'What would you produce for an auditor reviewing this?'\n"
+        "• Ask who is accountable for compliance at each stage and how that accountability is documented\n"
+        "• Ask about exception handling: 'How are policy waivers documented and approved?'\n"
+        "• Regulatory, audit, and compliance terminology is appropriate and expected"
+    ),
+    "trainer": (
+        "IMPORTANT — Interviewee: A trainer or instructional designer who has delivered this training before.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask 'What does a learner need to be able to do after each section?'\n"
+        "• Probe for the business reason behind each step: 'What goes wrong if this step is skipped?'\n"
+        "• Ask about step granularity: 'How do you break this down when teaching it to someone new?'\n"
+        "• Ask for examples: 'What scenario do you use in class to make this concrete?'\n"
+        "• Ask where trainees typically get confused or make mistakes\n"
+        "• Ask 'What do you always have to add during training that isn't written in the documentation?'"
+    ),
+    "claims_adjudicator": (
+        "IMPORTANT — Interviewee: A claims adjudicator who processes claims daily.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask about specific adjudication rules they apply: 'What exactly happens when edit X fires?'\n"
+        "• Probe for edit codes and reason codes: what each means in practice and what action they take\n"
+        "• Ask about COB logic: primary/secondary payer sequencing, crossover handling, non-duplication rules\n"
+        "• Ask about timely filing windows, retro-adjustment limits, late submission procedures\n"
+        "• Ask 'When do you escalate to manual review, and what documentation do you gather first?'\n"
+        "• Claims adjudication terminology (EOB, COB, edit codes, ANSI X12, etc.) is expected"
+    ),
+    "member_services": (
+        "IMPORTANT — Interviewee: A member services representative who answers member calls daily.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask 'How do you explain this outcome to a member — what words do you actually use?'\n"
+        "• Probe escalation procedures: 'When do you transfer the call? What do you summarize before handing off?'\n"
+        "• Ask about timelines: 'What timeframes do you quote to members who are waiting for a response?'\n"
+        "• Ask for talking points: 'What are the most common member questions about this, and how do you answer them?'\n"
+        "• Ask about coverage and benefit details members regularly ask about\n"
+        "• Avoid internal system codes or jargon the member would never see"
+    ),
+    "new_employee": (
+        "IMPORTANT — Interviewee: A team lead, process owner, or trainer responsible for onboarding new staff.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask 'Walk me through every step a new person must complete — don't skip anything you would normally assume'\n"
+        "• Probe for terminology: 'What acronyms or system names would a new hire not understand without explanation?'\n"
+        "• Ask about prerequisites: 'What access, approvals, or background knowledge does someone need before starting?'\n"
+        "• Ask 'What mistakes do new staff make most often, and why doesn't the documentation prevent them?'\n"
+        "• Ask about handoffs: 'Who else is involved, and what does the person doing this step need to give them?'\n"
+        "• Ask 'What do you always have to explain during onboarding that isn't written down anywhere?'"
+    ),
+    "business": (
+        "IMPORTANT — Interviewee: A business executive or manager who owns or oversees this process.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask about ownership: 'Who is accountable for each stage of this process — by name or role?'\n"
+        "• Probe for performance expectations: 'What KPIs or SLAs is this process expected to meet?'\n"
+        "• Ask about known inefficiencies: 'Are there bottlenecks or manual steps you've been wanting to fix?'\n"
+        "• Ask about compliance obligations: 'What regulatory or reporting requirements apply here?'\n"
+        "• Focus on business outcomes, decisions, and accountability — skip deep implementation detail\n"
+        "• Ask 'What would break or be at risk if this process failed? What are the business consequences?'"
+    ),
+    "developer": (
+        "IMPORTANT — Interviewee: A software developer or engineer who built or maintains these systems.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask about technical dependencies: 'What libraries, services, APIs, or environment variables are required?'\n"
+        "• Probe for error handling: 'What happens when this step fails? How does the system recover?'\n"
+        "• Ask about security: 'How is authentication handled? What data is sensitive and how is it protected?'\n"
+        "• Ask for integration specs: 'What format does this interface expect? What are the message schemas?'\n"
+        "• Ask about business logic in the code: 'What rules are encoded here that aren't obvious from reading the code?'\n"
+        "• Technical terminology (APIs, schemas, error codes, data types, etc.) is appropriate and expected"
+    ),
+    "expert": (
+        "IMPORTANT — Interviewee: A subject matter expert with deep domain and technical knowledge.\n\n"
+        "INTERVIEW APPROACH:\n"
+        "• Ask for precise specifications: exact formats, constraints, thresholds, and limits\n"
+        "• Probe for edge cases: 'Are there conditions where this rule doesn't apply? What triggers the exception?'\n"
+        "• Ask for cross-system integration details: message formats, sequencing rules, inter-system error handling\n"
+        "• Ask about performance requirements: throughput limits, peak load handling, concurrency rules\n"
+        "• Skip basic definitions — focus on nuances, non-obvious dependencies, and behavior that surprises people\n"
+        "• Ask 'What would surprise someone who read the documentation but had never worked with this system?'"
+    ),
+}
+
 # Response mode labels shown in the UI mode selector.
 RESPONSE_MODE_LABELS: dict[str, str] = {
     "summary": "Quick Summary",

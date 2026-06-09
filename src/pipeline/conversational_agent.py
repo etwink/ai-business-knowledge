@@ -188,9 +188,9 @@ class ConversationalAgent:
             for cat, items in gap_categories.items()
         )
         audience_line = (
-            f"Target audience for the documentation: {self._audience_note}\n"
+            f"Person being interviewed: {self._audience_note}\n"
             if self._audience_note else
-            "Target audience: a reader with NO prior knowledge of these systems.\n"
+            "Person being interviewed: a domain expert familiar with these processes.\n"
         )
         prompt = (
             f"You are a senior business analyst beginning a knowledge-capture interview.\n\n"
