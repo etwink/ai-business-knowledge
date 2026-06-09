@@ -1881,16 +1881,20 @@ def _generate_word_doc(doc) -> bytes:
                 run.font.size = Pt(9)
 
     if doc.citations:
+        import re as _re
         d.add_heading("Citations", level=1)
         d.add_paragraph(
             "The following source clusters were referenced during document generation. "
-            "Each [ref:N] marker in the original draft traces to the cluster listed here."
+            "Inline [N] markers in the document body trace to the cluster listed here."
         )
         for ref_key, info in sorted(doc.citations.items(), key=lambda kv: kv[0]):
             cluster_name = info.get("cluster_name", ref_key) if isinstance(info, dict) else ref_key
             files = info.get("files", []) if isinstance(info, dict) else []
+            # ref_key is "ref:N" — display as [N] to match inline markers
+            _m = _re.match(r'ref:(\d+)', ref_key)
+            label_num = _m.group(1) if _m else ref_key
             p = d.add_paragraph(style="List Bullet")
-            label = p.add_run(f"[{ref_key}]  {cluster_name}")
+            label = p.add_run(f"[{label_num}]  {cluster_name}")
             label.bold = True
             if files:
                 p.add_run(" — " + ", ".join(files))

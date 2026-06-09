@@ -585,8 +585,10 @@ Process Document:
         "specific cluster, append [ref:N] at the end (where N is the cluster number shown above, "
         "e.g. [ref:3] for Cluster 3). If a sentence synthesizes several clusters, append all "
         "relevant refs (e.g. [ref:1][ref:4]). Omit markers from general synthesis sentences and "
-        "from headings. These markers are stripped before the document is published — they are "
-        "for internal source-tracing only."
+        "from headings. IMPORTANT: use ONLY the format [ref:N] with a plain number — do NOT add "
+        "any text inside the brackets after the number (e.g. [ref:3: description] is WRONG; "
+        "[ref:3] is correct). These markers will appear as [N] inline in the published document "
+        "for source traceability."
     )
 
     # Appended to every section prompt to prevent the LLM from inventing terminology.

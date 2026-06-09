@@ -220,12 +220,14 @@ class ProcessDocumentBuilder:
         doc: "ProcessDocument",
         cluster_sources: Dict[int, dict],
     ) -> "ProcessDocument":
-        """Parse [ref:N] markers from narrative sections, build citations dict, strip markers.
+        """Parse [ref:N] markers from narrative sections, build citations dict, convert to [N].
 
         cluster_sources: {N: {"cluster_name": str, "files": list[str]}}
-        Returns a new ProcessDocument with clean body text and citations populated.
+        Handles malformed markers like [ref:3: extra text] by matching [ref:N<anything>].
+        Returns a new ProcessDocument with [ref:N] → [N] inline and citations populated.
         """
-        _ref_re = re.compile(r'\[ref:(\d+)\]', re.IGNORECASE)
+        # Broad pattern catches well-formed [ref:3] AND malformed [ref:3: extra text]
+        _ref_re = re.compile(r'\[ref:(\d+)[^\]]*\]', re.IGNORECASE)
         _NARRATIVE = (
             "overview", "integrated_processes", "dependencies",
             "data_flow", "decision_points", "systems_and_components",
@@ -238,7 +240,7 @@ class ProcessDocumentBuilder:
                 referenced.add(int(m.group(1)))
 
         if not referenced:
-            return doc  # LLM emitted no markers — nothing to strip
+            return doc  # LLM emitted no markers — nothing to convert
 
         # Build citations dict
         citations: dict = {
@@ -247,9 +249,9 @@ class ProcessDocumentBuilder:
             if n in cluster_sources
         }
 
-        # Strip markers and reconstruct
+        # Convert [ref:N...] → [N] so inline anchors remain visible in the document
         def _clean(text: str) -> str:
-            return _ref_re.sub("", text).strip()
+            return _ref_re.sub(lambda m: f"[{m.group(1)}]", text).strip()
 
         return ProcessDocument(
             overview=_clean(doc.overview),
