@@ -1,7 +1,19 @@
 """
 COBOL Dependency Analyzer
-Scans COBOL source files (.CIC, .CPY, .MPS, .SRC, .CT1, .JCV, .PRV) and builds
-a dependency graph based on COPY, CALL, and other inter-file references.
+Scans COBOL/JCL source files and builds a dependency graph based on COPY, CALL,
+EXEC PGM/PROC, DD DSN member references, and other inter-file references.
+
+Supported extensions
+--------------------
+.CIC  — CICS transaction programs
+.CPY  — COBOL copybooks
+.MPS  — map / BMS source
+.SRC  — generic COBOL source
+.CT1  — Changeman package source (common DSN target in JCL)
+.JCV  — JCL variation files (JCL-like syntax; use '//' lines for step definitions)
+.PRV  — IBM ADMF (Automated Database Management Facility) utility procedures;
+        invoke DB2 batch utilities in the ADMF batch environment
+.COB / .CBL / .COBOL — standard COBOL source extensions
 """
 
 import re
@@ -130,7 +142,10 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
     ),
 ]
 
-TARGET_EXTENSIONS = {".CIC", ".CPY", ".MPS", ".SRC", ".CT1", ".JCV", ".PRV"}
+TARGET_EXTENSIONS = {
+    ".CIC", ".CPY", ".MPS", ".SRC", ".CT1", ".JCV", ".PRV",
+    ".COB", ".CBL", ".COBOL",
+}
 
 # JCL DD DSN member references for every tracked source-file extension.
 # Example: //SYSIN DD DSN=CMNPPO.PRODSHRP.CT1(CIMPCMS1),DISP=SHR
@@ -198,17 +213,19 @@ def _strip_sequence_area(source: str) -> str:
 
 
 def _is_comment_line(line: str) -> bool:
-    """
-    In fixed-format COBOL column 7 (index 6) is '*' or '/' for comments.
-    Free-format files won't have sequence numbers, so this heuristic is
-    conservative: only skip if the line is long enough and col 7 matches.
+    """Return True for COBOL comment/directive lines; False for JCL and code lines.
+
+    Fixed-format COBOL: column 7 (index 6) is the indicator column.
+      '*' = comment line, '/' = page-eject (also skipped), 'D'/'d' = debug.
+    Free-format fallback: lines whose stripped form starts with '*' are comments.
+    JCL lines start with '//' and must NOT be treated as comments even though
+    '/' appears at position 0 — JCV files are JCL-format and depend on this.
     """
     if len(line) >= 7 and line[6] in ("*", "/", "d", "D"):
         return True
-    # Also skip lines whose *stripped* content starts with * (some editors
-    # omit the sequence area entirely).
     stripped = line.lstrip()
-    return stripped.startswith("*") or stripped.startswith("/")
+    # '* ...' is a free-format COBOL comment; '//' is a JCL statement (not a comment).
+    return stripped.startswith("*")
 
 
 def parse_file(path: Path) -> FileAnalysis:

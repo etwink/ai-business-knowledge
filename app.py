@@ -59,6 +59,10 @@ def initialize_session():
         st.session_state.bulk_cluster_summaries = None  # list[ClusterSummary]
     if 'bulk_missing_deps' not in st.session_state:
         st.session_state.bulk_missing_deps = {}         # {missing_stem: [referencing_stems]}
+    if 'bulk_dep_graph' not in st.session_state:
+        st.session_state.bulk_dep_graph = {}            # {stem: [dep_dicts]}
+    if 'bulk_dep_analyses' not in st.session_state:
+        st.session_state.bulk_dep_analyses = []         # list[FileAnalysis]
     # Process context state (set before analysis to guide the LLM)
     if 'process_context' not in st.session_state:
         st.session_state.process_context = None    # ProcessContext | None
@@ -318,6 +322,7 @@ def render_sidebar():
             "Select a step:",
             [
                 "Group Documents",
+                "Dependency Graph",
                 "Review Process Document",
                 "Gap Analysis",
                 "Gap-Filling Chat",
@@ -625,6 +630,8 @@ def render_group_documents_page():
                         context_block=ctx_block,
                     )
                     st.session_state.bulk_missing_deps = builder.missing_dependencies
+                    st.session_state.bulk_dep_graph = builder.dep_graph
+                    st.session_state.bulk_dep_analyses = builder.dep_analyses
                     st.session_state.bulk_cluster_summaries = None
                     try:
                         _session = _ensure_session()
@@ -807,6 +814,312 @@ def render_group_documents_page():
             )
 
 
+
+
+# ---------------------------------------------------------------------------
+# Dependency Graph page
+# ---------------------------------------------------------------------------
+
+_CLUSTER_TYPE_COLORS = {
+    "cobol": "#4C72B0",
+    "mixed": "#55A868",
+    "docs":  "#DD8452",
+}
+
+_PLOTLY_PALETTE = [
+    "#636EFA", "#EF553B", "#00CC96", "#AB63FA", "#FFA15A",
+    "#19D3F3", "#FF6692", "#B6E880", "#FF97FF", "#FECB52",
+    "#1F77B4", "#FF7F0E", "#2CA02C", "#D62728", "#9467BD",
+    "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
+]
+
+
+def _spring_positions(nodes: list, edges: list, seed: int = 42) -> dict:
+    """Return {node: (x, y)} using networkx spring layout, or circular fallback."""
+    try:
+        import networkx as nx
+        G = nx.DiGraph()
+        G.add_nodes_from(nodes)
+        G.add_edges_from(e for e in edges if e[0] in G and e[1] in G)
+        k = 2.0 / max(len(nodes) ** 0.5, 1)
+        raw = nx.spring_layout(G, k=k, seed=seed, iterations=80)
+        return {n: (float(raw[n][0]), float(raw[n][1])) for n in nodes if n in raw}
+    except ImportError:
+        import math
+        n = max(len(nodes), 1)
+        return {
+            node: (math.cos(2 * math.pi * i / n), math.sin(2 * math.pi * i / n))
+            for i, node in enumerate(nodes)
+        }
+
+
+def _edge_traces(positions: dict, edges: list, color: str = "rgba(150,150,150,0.35)", width: float = 1.0):
+    import plotly.graph_objects as go
+    result = []
+    for src, tgt in edges:
+        if src not in positions or tgt not in positions:
+            continue
+        x0, y0 = positions[src]
+        x1, y1 = positions[tgt]
+        result.append(go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode="lines",
+            line=dict(color=color, width=width),
+            hoverinfo="none",
+            showlegend=False,
+        ))
+    return result
+
+
+def _render_cluster_graph(cluster_info: dict, inter_edges: dict) -> "go.Figure":
+    import plotly.graph_objects as go
+
+    nodes = list(cluster_info.keys())
+    edge_list = list(inter_edges.keys())
+    positions = _spring_positions(nodes, edge_list)
+
+    max_w = max(inter_edges.values(), default=1)
+    traces = []
+    annotations = []
+    for (src, tgt), count in inter_edges.items():
+        if src not in positions or tgt not in positions:
+            continue
+        x0, y0 = positions[src]
+        x1, y1 = positions[tgt]
+        traces.append(go.Scatter(
+            x=[x0, x1, None], y=[y0, y1, None],
+            mode="lines",
+            line=dict(color="rgba(120,120,120,0.45)", width=1 + 3 * count / max_w),
+            hoverinfo="none",
+            showlegend=False,
+        ))
+        annotations.append(dict(
+            ax=x0, ay=y0, x=x1, y=y1,
+            xref="x", yref="y", axref="x", ayref="y",
+            showarrow=True, arrowhead=2, arrowsize=1.2,
+            arrowcolor="rgba(100,100,100,0.55)", arrowwidth=1.5,
+        ))
+
+    node_x, node_y, labels, hovers, colors, sizes = [], [], [], [], [], []
+    for cid, info in cluster_info.items():
+        if cid not in positions:
+            continue
+        x, y = positions[cid]
+        node_x.append(x); node_y.append(y)
+        labels.append(info["name"])
+        hovers.append(f"<b>{info['name']}</b><br>Type: {info['type']}<br>Files: {info['file_count']}")
+        colors.append(_CLUSTER_TYPE_COLORS.get(info["type"], "#888"))
+        sizes.append(max(20, 18 + info["file_count"] * 2))
+
+    traces.append(go.Scatter(
+        x=node_x, y=node_y,
+        mode="markers+text",
+        text=labels, textposition="top center", textfont=dict(size=10),
+        marker=dict(color=colors, size=sizes, line=dict(color="white", width=1.5)),
+        hovertext=hovers, hoverinfo="text",
+        showlegend=False,
+    ))
+
+    type_labels = {"cobol": "Source Code", "mixed": "Code + Docs", "docs": "Documents"}
+    for ct in sorted({info["type"] for info in cluster_info.values()}):
+        traces.append(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(color=_CLUSTER_TYPE_COLORS.get(ct, "#888"), size=12),
+            name=type_labels.get(ct, ct),
+        ))
+
+    return go.Figure(
+        data=traces,
+        layout=go.Layout(
+            height=520,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            plot_bgcolor="white", paper_bgcolor="white",
+            annotations=annotations,
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+            hovermode="closest",
+        ),
+    )
+
+
+def _render_file_graph(
+    nodes: list, edges: list, file_to_cluster: dict,
+    cluster_info: dict, cluster_summaries: list,
+) -> "go.Figure":
+    import plotly.graph_objects as go
+
+    if not nodes:
+        return go.Figure()
+
+    positions = _spring_positions(nodes, edges)
+    traces = _edge_traces(positions, edges)
+
+    color_map = {
+        cs.cluster_id: _PLOTLY_PALETTE[i % len(_PLOTLY_PALETTE)]
+        for i, cs in enumerate(cluster_summaries)
+    }
+
+    grouped: dict[str, list] = {}
+    unresolved = []
+    for node in nodes:
+        cid = file_to_cluster.get(node)
+        if cid:
+            grouped.setdefault(cid, []).append(node)
+        else:
+            unresolved.append(node)
+
+    for cid, members in grouped.items():
+        info = cluster_info.get(cid, {})
+        color = color_map.get(cid, "#888")
+        xs = [positions[n][0] for n in members if n in positions]
+        ys = [positions[n][1] for n in members if n in positions]
+        traces.append(go.Scatter(
+            x=xs, y=ys, mode="markers",
+            marker=dict(color=color, size=10, line=dict(color="white", width=1)),
+            hovertext=[f"<b>{n}</b><br>Cluster: {info.get('name', cid)}" for n in members if n in positions],
+            hoverinfo="text",
+            name=info.get("name", cid),
+        ))
+
+    if unresolved:
+        xs = [positions[n][0] for n in unresolved if n in positions]
+        ys = [positions[n][1] for n in unresolved if n in positions]
+        traces.append(go.Scatter(
+            x=xs, y=ys, mode="markers",
+            marker=dict(color="#cccccc", size=8, symbol="diamond"),
+            hovertext=[f"<b>{n}</b><br>Referenced but not in scanned folder" for n in unresolved if n in positions],
+            hoverinfo="text",
+            name="Missing / Unresolved",
+        ))
+
+    return go.Figure(
+        data=traces,
+        layout=go.Layout(
+            height=640,
+            margin=dict(l=20, r=20, t=20, b=20),
+            xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
+            plot_bgcolor="white", paper_bgcolor="white",
+            hovermode="closest",
+            legend=dict(x=1.01, y=1, font=dict(size=10), bgcolor="rgba(255,255,255,0.8)"),
+        ),
+    )
+
+
+def render_dependency_graph_page():
+    from collections import defaultdict
+    st.header("🔗 Dependency Graph")
+
+    cluster_summaries = st.session_state.get("bulk_cluster_summaries") or []
+    dep_graph = st.session_state.get("bulk_dep_graph") or {}
+
+    if not cluster_summaries and not dep_graph:
+        st.info(
+            "No dependency data yet. Complete **Group Documents → Step 3 (Build Clusters)** "
+            "and **Step 4 (Summarize Clusters)** first."
+        )
+        return
+
+    try:
+        import plotly.graph_objects as go  # noqa: F401
+    except ImportError:
+        st.error(
+            "`plotly` is not installed. Run `pip install plotly networkx` in your environment "
+            "and restart the app."
+        )
+        return
+
+    # file stem (upper-case) → cluster_id
+    file_to_cluster: dict[str, str] = {}
+    for cs in cluster_summaries:
+        for f in cs.source_files:
+            file_to_cluster[Path(f).stem.upper()] = cs.cluster_id
+
+    cluster_info: dict[str, dict] = {
+        cs.cluster_id: {"name": cs.cluster_name, "file_count": cs.file_count, "type": cs.cluster_type}
+        for cs in cluster_summaries
+    }
+
+    inter_cluster_edges: dict[tuple, int] = defaultdict(int)
+    file_edges: list[tuple] = []
+    for src_stem, deps in dep_graph.items():
+        src_cid = file_to_cluster.get(src_stem)
+        for dep in deps:
+            tgt = dep["target"]
+            file_edges.append((src_stem, tgt))
+            tgt_cid = file_to_cluster.get(tgt)
+            if src_cid and tgt_cid and src_cid != tgt_cid:
+                inter_cluster_edges[(src_cid, tgt_cid)] += 1
+
+    # ── Cluster graph ────────────────────────────────────────────────────────
+    if cluster_summaries:
+        st.subheader("Cluster Dependency Graph")
+        st.caption(
+            "Each node is one cluster — size reflects file count. "
+            "Arrows point **dependent → dependency** (A → B: something in A calls/copies B). "
+            "Blue = source code only · Green = code + docs · Orange = documents only."
+        )
+        st.plotly_chart(
+            _render_cluster_graph(cluster_info, dict(inter_cluster_edges)),
+            use_container_width=True,
+        )
+
+    st.divider()
+
+    # ── File graph ───────────────────────────────────────────────────────────
+    st.subheader("File Dependency Graph")
+
+    filter_options = ["All clusters"] + [cs.cluster_name for cs in cluster_summaries]
+    selected = st.selectbox("Scope to cluster", filter_options, key="dep_graph_filter")
+
+    if selected != "All clusters":
+        target_cs = next((cs for cs in cluster_summaries if cs.cluster_name == selected), None)
+        if target_cs:
+            cluster_files = {Path(f).stem.upper() for f in target_cs.source_files}
+            visible = set(cluster_files)
+            for stem in cluster_files:
+                for dep in dep_graph.get(stem, []):
+                    visible.add(dep["target"])
+            for src, deps in dep_graph.items():
+                if any(dep["target"] in cluster_files for dep in deps):
+                    visible.add(src)
+            filtered_edges = [(s, t) for s, t in file_edges if s in visible or t in visible]
+            display_nodes = list(visible)
+            external = len(visible) - len(cluster_files)
+            st.caption(
+                f"**{len(cluster_files)} files** in *{selected}* "
+                f"+ {external} external neighbor(s). "
+                "Nodes outside the selected cluster show the cluster boundary."
+            )
+        else:
+            display_nodes = list(file_to_cluster.keys())
+            filtered_edges = file_edges
+    else:
+        all_referenced = {t for _, t in file_edges}
+        display_nodes = list(set(file_to_cluster.keys()) | all_referenced)
+        filtered_edges = file_edges
+        n_missing = len(all_referenced - set(file_to_cluster.keys()))
+        st.caption(
+            f"All **{len(display_nodes)} files** across **{len(cluster_summaries)} clusters**. "
+            + (f"**{n_missing}** gray diamond node(s) are referenced but not in the scanned folder." if n_missing else "")
+        )
+
+    if display_nodes:
+        st.plotly_chart(
+            _render_file_graph(display_nodes, filtered_edges, file_to_cluster, cluster_info, cluster_summaries),
+            use_container_width=True,
+        )
+    else:
+        st.info("No file dependency data to display for this selection.")
+
+    # ── Missing dependencies summary ─────────────────────────────────────────
+    missing_deps = st.session_state.get("bulk_missing_deps") or {}
+    if missing_deps:
+        with st.expander(f"⚠️ {len(missing_deps)} referenced file(s) not found in scanned folder"):
+            st.caption("These stems appear in COPY/CALL/DSN statements but have no matching scanned file.")
+            for stem, referencing in sorted(missing_deps.items()):
+                st.write(f"**{stem}** ← {', '.join(sorted(referencing))}")
 
 
 def render_process_document_page():
@@ -2462,6 +2775,8 @@ def main():
     # Main content
     if page == "Group Documents":
         render_group_documents_page()
+    elif page == "Dependency Graph":
+        render_dependency_graph_page()
     elif page == "Review Process Document":
         render_process_document_page()
     elif page == "Gap Analysis":

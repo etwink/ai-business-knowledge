@@ -9,3 +9,5 @@ pydantic==2.5.3
 oletools>=0.60
 pyxlsb>=1.0
 sentence-transformers>=2.6
+networkx>=3.0
+plotly>=5.0

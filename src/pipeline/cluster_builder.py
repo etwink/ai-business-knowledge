@@ -87,6 +87,9 @@ class ClusterBuilder:
         from src.llm_integration import AzureLLMClient
         self.llm = AzureLLMClient()
         self.missing_dependencies: dict[str, list[str]] = {}
+        # Populated during build_clusters; expose for visualization
+        self.dep_graph: dict[str, list[dict]] = {}
+        self.dep_analyses: list = []
 
     # ------------------------------------------------------------------
     # Public API
@@ -127,6 +130,8 @@ class ClusterBuilder:
         analyses = [parse_file(p) for p in cobol_files]
         graph = build_dependency_graph(analyses)
         self.missing_dependencies = find_missing_dependencies(analyses, graph)
+        self.dep_graph = graph
+        self.dep_analyses = analyses
 
         # Identify entry points: files that appear as a source but are never
         # someone else's target (i.e. nothing calls them).
