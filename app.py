@@ -1744,6 +1744,73 @@ def _chat_to_word_bytes(messages: list[dict], title: str = "Chat Conversation") 
     return buf.getvalue()
 
 
+def _diagram_layout(png_bytes: bytes) -> "tuple[float, str | None, bool]":
+    """Return (width_inches, paper_note, use_tabloid_landscape) for a rendered PNG.
+
+    Tier 1 — portrait letter  : fits at 6.5" wide within 9" tall  → no note
+    Tier 2 — portrait legal   : fits at 6.5" wide within 12.5" tall → suggest legal paper
+    Tier 3 — tabloid landscape: everything else → landscape 11×17 section + paper note
+    Falls back to (6.5, None, False) if PIL is not installed or the image is unreadable.
+    """
+    try:
+        from PIL import Image
+        import io as _io
+        img = Image.open(_io.BytesIO(png_bytes))
+        img_w, img_h = img.size
+        if img_w == 0:
+            return 6.5, None, False
+        aspect = img_h / img_w
+    except Exception:
+        return 6.5, None, False  # PIL unavailable — safe default
+
+    h_at_portrait = 6.5 * aspect
+    if h_at_portrait <= 9.0:
+        return 6.5, None, False
+    elif h_at_portrait <= 12.5:
+        return 6.5, 'For best results, print on legal paper (8.5" × 14").', False
+    else:
+        # Landscape tabloid: 16" × 9.5" usable (17" × 11" with 0.5" margins)
+        pic_w = min(16.0, 9.5 / aspect)
+        return pic_w, 'For best results, print on 11" × 17" paper (landscape).', True
+
+
+def _begin_tabloid_landscape_section(d) -> None:
+    """Insert a next-page section break that ends the preceding portrait section."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    p = d.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+    sectPr = OxmlElement('w:sectPr')
+    pgSz = OxmlElement('w:pgSz')
+    pgSz.set(qn('w:w'), '12240')   # 8.5" in twips
+    pgSz.set(qn('w:h'), '15840')   # 11" in twips
+    sectPr.append(pgSz)
+    pgMar = OxmlElement('w:pgMar')
+    for attr, val in [('w:top', '1440'), ('w:right', '1440'), ('w:bottom', '1440'), ('w:left', '1440')]:
+        pgMar.set(qn(attr), val)
+    sectPr.append(pgMar)
+    pPr.append(sectPr)
+
+
+def _end_tabloid_landscape_section(d) -> None:
+    """Insert a next-page section break that ends the tabloid landscape section."""
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+    p = d.add_paragraph()
+    pPr = p._p.get_or_add_pPr()
+    sectPr = OxmlElement('w:sectPr')
+    pgSz = OxmlElement('w:pgSz')
+    pgSz.set(qn('w:w'), '24480')   # 17" in twips (landscape width)
+    pgSz.set(qn('w:h'), '15840')   # 11" in twips (landscape height)
+    pgSz.set(qn('w:orient'), 'landscape')
+    sectPr.append(pgSz)
+    pgMar = OxmlElement('w:pgMar')
+    for attr, val in [('w:top', '720'), ('w:right', '720'), ('w:bottom', '720'), ('w:left', '720')]:
+        pgMar.set(qn(attr), val)
+    sectPr.append(pgMar)
+    pPr.append(sectPr)
+
+
 def _generate_word_doc(doc) -> bytes:
     """Build a Word document from a ProcessDocument and return raw bytes."""
     import io
@@ -1772,16 +1839,31 @@ def _generate_word_doc(doc) -> bytes:
         d.add_heading("Process Flow Diagram", level=1)
         png = _mermaid_to_png(doc.process_flow_diagram)
         if png:
-            d.add_picture(io.BytesIO(png), width=Inches(6.0))
+            pic_w_in, paper_note, use_landscape = _diagram_layout(png)
+            if use_landscape:
+                _begin_tabloid_landscape_section(d)
+            d.add_picture(io.BytesIO(png), width=Inches(pic_w_in))
+            if paper_note:
+                note_p = d.add_paragraph(paper_note)
+                for r in note_p.runs:
+                    r.italic = True
+                    r.font.size = Pt(9)
+            if use_landscape:
+                _end_tabloid_landscape_section(d)
         else:
-            # Offline fallback: embed Mermaid source as code block
             d.add_paragraph(
-                "To render this diagram, paste the code below at https://mermaid.live"
+                "Diagram could not be rendered. "
+                "Paste the Mermaid source below at https://mermaid.live to view it."
             )
-            code_para = d.add_paragraph(doc.process_flow_diagram)
-            for run in code_para.runs:
-                run.font.name = "Courier New"
-                run.font.size = Pt(9)
+        # Always embed Mermaid source so the diagram is reproducible
+        src_label = d.add_paragraph("Mermaid source (paste at https://mermaid.live):")
+        for r in src_label.runs:
+            r.italic = True
+            r.font.size = Pt(9)
+        code_para = d.add_paragraph(doc.process_flow_diagram)
+        for run in code_para.runs:
+            run.font.name = "Courier New"
+            run.font.size = Pt(8)
 
     if doc.citations:
         import re as _re
