@@ -66,6 +66,18 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
+    # JCL DD statement referencing a CT1 partitioned dataset member.
+    # Example: //SYSIN DD DSN=CMNPPO.PRODSHRP.CT1(CIMPCMS1),DISP=SHR
+    # The member name (CIMPCMS1) is the stem of the dependent .CT1 file.
+    # Requires at least one high-level qualifier before ".CT1(" to avoid
+    # matching bare CT1(...) in unrelated contexts.
+    (
+        "DD DSN CT1",
+        re.compile(
+            r"DSN=(?:[\w\$\#@\-]+\.)+CT1\s*\(\s*(?P<member>[\w\$\#@\-]+)\s*\)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
     # EXEC CICS LINK PROGRAM(<name>)   — common in CIC files
     (
         "EXEC CICS LINK",
