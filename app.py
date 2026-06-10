@@ -66,6 +66,8 @@ def initialize_session():
         st.session_state.doc_audience = "new_employee"
     if 'custom_audience_note' not in st.session_state:
         st.session_state.custom_audience_note = ""
+    if '_sme_role_description' not in st.session_state:
+        st.session_state._sme_role_description = ""
     # Response mode — controls format and depth of chat answers
     if 'response_mode' not in st.session_state:
         st.session_state.response_mode = "standard"
@@ -86,6 +88,7 @@ def _save_session_settings() -> None:
     settings = {
         "doc_audience": st.session_state.get("doc_audience", "new_employee"),
         "custom_audience_note": st.session_state.get("custom_audience_note", ""),
+        "sme_role_description": st.session_state.get("_sme_role_description", ""),
         "process_context": {
             "foundation_document": ctx.foundation_document if ctx else None,
             "process_description": ctx.process_description if ctx else "",
@@ -244,6 +247,8 @@ def render_sidebar():
                         if 'custom_audience_note' in _s:
                             st.session_state.custom_audience_note = _s['custom_audience_note']
                             st.session_state._custom_audience_staging = _s['custom_audience_note']
+                        if 'sme_role_description' in _s:
+                            st.session_state._sme_role_description = _s['sme_role_description']
                         if _s.get('process_context'):
                             from src.pipeline.context_agent import ProcessContext
                             _pc = _s['process_context']
@@ -522,10 +527,23 @@ def render_group_documents_page():
             height=80,
             key="_custom_audience_staging",
         )
+    st.text_area(
+        "Describe this SME's specific role (optional)",
+        placeholder=(
+            "e.g. 'Data entry operator on the enrollment screens — no access to job scheduler, "
+            "system logs, or program internals' or 'Front-line claims processor who handles "
+            "standard submissions but escalates complex cases'"
+        ),
+        help="Narrows gap analysis to what this specific person would know from their daily work. Helps filter out gaps only a developer or admin could answer.",
+        height=80,
+        key="_sme_role_description_staging",
+        value=st.session_state.get("_sme_role_description", ""),
+    )
     if st.button("💾 Save Audience"):
         st.session_state.doc_audience = st.session_state._audience_staging
         if st.session_state._audience_staging == "custom":
             st.session_state.custom_audience_note = st.session_state.get("_custom_audience_staging", "")
+        st.session_state._sme_role_description = st.session_state.get("_sme_role_description_staging", "")
         _save_session_settings()
         st.rerun()
     # Show unsaved-changes warning when staging differs from committed value
@@ -963,10 +981,12 @@ def render_gap_analysis_page():
         with st.spinner("Analyzing gaps (pass 1 — identifying gaps)…"):
             gap_analyzer = GapAnalyzer()
             _audience = st.session_state.get("doc_audience", "new_employee")
-            _audience_note = (
-                st.session_state.get("custom_audience_note", "")
-                if _audience == "custom" else ""
-            )
+            _sme_role = st.session_state.get("_sme_role_description", "").strip()
+            if _audience == "custom":
+                _base = st.session_state.get("custom_audience_note", "")
+                _audience_note = (_base + "\n\n" + _sme_role).strip() if _sme_role else _base
+            else:
+                _audience_note = _sme_role
             # Collect edge case hints from cluster summaries (if available)
             _cluster_edge_cases = []
             if st.session_state.bulk_cluster_summaries:
@@ -1227,12 +1247,16 @@ def render_chat_page():
                     _kb = _kb_candidate
 
             _audience = st.session_state.get("doc_audience", "new_employee")
+            _sme_role = st.session_state.get("_sme_role_description", "").strip()
+            _interview_note = AUDIENCE_INTERVIEW_NOTES.get(_audience, "")
+            if _sme_role:
+                _interview_note = (_interview_note + f"\n\nSpecific SME context: {_sme_role}").strip()
             agent = ConversationalAgent(
                 analyses=st.session_state.analyses,
                 process_document=st.session_state.process_document,
                 gap_analysis=st.session_state.gap_analysis,
                 knowledge_base=_kb,
-                audience_note=AUDIENCE_INTERVIEW_NOTES.get(_audience, ""),
+                audience_note=_interview_note,
                 response_mode=st.session_state.get("response_mode", "standard"),
                 detail_level=st.session_state.get("detail_level", "standard"),
             )
@@ -1290,10 +1314,14 @@ def render_chat_page():
                 else:
                     icon = "⬜"
                     row_style = "color:#333;border-left:3px solid #ddd;"
+                    rephrase_badge = (
+                        "&nbsp;<span style='font-size:0.68rem;color:#888;font-style:italic'>(rephrased)</span>"
+                        if g.rephrased else ""
+                    )
                     gap_rows.append(
                         f"<div style='font-size:0.82rem;{row_style}"
                         f"padding:4px 0 2px 8px;margin:3px 0;line-height:1.4'>"
-                        f"{icon}&nbsp;{_html.escape(g.description)}</div>"
+                        f"{icon}&nbsp;{_html.escape(g.description)}{rephrase_badge}</div>"
                     )
                     # Show cluster tag and source files under unresolved gaps
                     meta_parts = []
@@ -1319,6 +1347,42 @@ def render_chat_page():
             f"{html_content}</div>",
             unsafe_allow_html=True,
         )
+
+        # ── Gap management: rephrase or skip individual gaps ─────────────────
+        _unresolved_gaps = [g for g in agent.gap_queue if not g.resolved]
+        if _unresolved_gaps:
+            with st.expander("Manage gaps — rephrase or skip"):
+                st.caption(
+                    "If the agent asks about a gap this SME wouldn't know, "
+                    "select it here to rephrase it for their level or skip it entirely."
+                )
+                _mgmt_sel_col, _mgmt_btn_col = st.columns([3, 1])
+                with _mgmt_sel_col:
+                    _selected_idx = st.selectbox(
+                        "Gap",
+                        range(len(_unresolved_gaps)),
+                        format_func=lambda i: (
+                            f"{'↩ ' if _unresolved_gaps[i].rephrased else ''}"
+                            f"[{_unresolved_gaps[i].category}] "
+                            f"{_unresolved_gaps[i].description[:90]}"
+                            f"{'…' if len(_unresolved_gaps[i].description) > 90 else ''}"
+                        ),
+                        label_visibility="collapsed",
+                    )
+                with _mgmt_btn_col:
+                    _r_col, _s_col = st.columns(2)
+                    with _r_col:
+                        if st.button("🔄 Rephrase", help="Rewrite this gap to be answerable by the selected SME audience", use_container_width=True):
+                            with st.spinner("Rephrasing…"):
+                                agent.rephrase_gap(_unresolved_gaps[_selected_idx])
+                            st.rerun()
+                    with _s_col:
+                        if st.button("✖ Skip", help="Mark this gap as not applicable to this SME", use_container_width=True):
+                            agent.skip_gap(_unresolved_gaps[_selected_idx])
+                            st.rerun()
+                _sel_gap = _unresolved_gaps[_selected_idx]
+                if _sel_gap.rephrased and _sel_gap.original_description:
+                    st.caption(f"*Original: {_sel_gap.original_description[:120]}{'…' if len(_sel_gap.original_description) > 120 else ''}*")
 
     _render_chat_column(agent)
 

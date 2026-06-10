@@ -189,19 +189,27 @@ DEPENDENCIES:
     _AUDIENCE_GAP_CONFIGS: dict = {
         "business_user": {
             "audience_desc": (
-                "a business operations user who performs these workflows daily and can speak "
-                "to exact screen navigation, field values, real-world exceptions, and "
-                "workarounds from direct hands-on experience"
+                "a business operations user who works in this system daily at their workstation — "
+                "entering data, processing transactions, and navigating screens. "
+                "This SME can describe: exact screen names and navigation paths, field labels and "
+                "the values they enter, error messages that appear on their screen, the steps they "
+                "take to recover from those errors, and real-world workarounds they use day-to-day. "
+                "This SME does NOT know: program names, source code, configuration parameters "
+                "(such as internal flags or system settings invisible to the user), job scheduler "
+                "internals, server-side logs, or any technical detail not visible at their "
+                "workstation. Every gap must be phrased in terms of what this SME sees, clicks, "
+                "or types — not what the system does internally. If a gap can only be answered "
+                "by a developer or system administrator, exclude it entirely."
             ),
             "categories": [
                 ("Undocumented Screen and Navigation Steps",
-                 "Exact menu paths, screen names, button labels, or field values the SME uses every day that are missing from the documentation"),
+                 "Exact screen names, menu paths, button labels, or field values the SME navigates every day that are missing from the documentation — phrase in terms of what they see and click"),
                 ("Undocumented Data Entry Rules",
-                 "Field-level rules the SME knows from experience: accepted values, formats, required vs. optional status, or common entry mistakes and how to avoid them"),
-                ("Undocumented Error Handling and Recovery",
-                 "Error messages or system behaviors the SME has encountered and the recovery steps they take that are not captured in the documentation"),
+                 "Field-level rules the SME knows from experience: accepted values, formats, required vs. optional status, or common entry mistakes and how to avoid them — as seen from their workstation"),
+                ("Undocumented Error Messages and Recovery Steps",
+                 "Error messages or warning dialogs that appear on the SME's screen, what they mean in plain business terms, and the exact steps the SME takes to recover — EXCLUDE internal system errors, program crashes, or technical failure modes the SME never sees directly"),
                 ("Undocumented Workflow Variations and Workarounds",
-                 "Exceptions, corrections, overrides, or alternate paths the SME regularly handles that are absent from the documented process"),
+                 "Exceptions, corrections, or alternate paths the SME regularly handles that are absent from the documented process — describe what they do differently and why, not what the system does behind the scenes"),
             ],
         },
         "care_coordinator": {
@@ -388,6 +396,10 @@ DEPENDENCIES:
 
         if cfg:
             audience_desc = cfg["audience_desc"]
+            if audience_note:
+                audience_desc += (
+                    f"\n\nAdditional context about this specific SME: {audience_note}"
+                )
             categories_block = "\n".join(
                 f'- "{name}": {desc}'
                 for name, desc in cfg["categories"]

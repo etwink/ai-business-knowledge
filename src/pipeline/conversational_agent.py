@@ -27,6 +27,8 @@ class GapItem:
     resolved: bool = False
     resolution: str = ""
     related_sources: list[dict] = field(default_factory=list)  # {file, text, score}
+    rephrased: bool = False
+    original_description: str = ""  # set when description is replaced via rephrase
 
 
 @dataclass
@@ -69,6 +71,19 @@ Your behavior:
   and note it as an assumption to validate later.
 - When all listed gaps are addressed, output <<ALL_GAPS_RESOLVED>> and offer a brief summary \
   of what was learned, then ask if there is anything else the user wants to add.
+
+HANDLING GAPS THE SME CANNOT ANSWER:
+If the user indicates the SME being interviewed cannot answer a gap because it is outside their \
+role, access, or knowledge (phrases like "they wouldn't know", "that's too technical for them", \
+"they don't have access to that", "not their area", "wrong person"):
+1. Acknowledge this is a valid constraint.
+2. Try to rephrase the gap into something this SME CAN answer from their directly observable \
+   experience (what they see on screen, what steps they take, what messages appear to them).
+   If a useful rephrasing exists: emit <<GAP_REPHRASE: [new one-sentence description]>> on its \
+   own line, then continue the conversation using the rephrased version.
+3. If the gap truly cannot be answered by this SME in any useful form: \
+   emit <<GAP_SKIP: [brief reason]>> on its own line to remove it from the list.
+Never silently drop a gap — always emit one of the two markers and explain what you did.
 
 Tone: curious, professional, and encouraging. Show genuine interest in understanding the process. \
 Never make the user feel like they are just answering a checklist."""
@@ -265,10 +280,30 @@ class ConversationalAgent:
             if update:
                 document_updates.append(update)
 
+        # Process GAP_REPHRASE markers — update the gap's description in-place
+        for new_desc in re.findall(r'<<GAP_REPHRASE:\s*(.*?)\s*>>', raw, re.DOTALL):
+            new_desc = new_desc.strip()
+            target = self._match_gap_by_keyword(new_desc, unresolved_snapshot)
+            if target:
+                target.original_description = target.original_description or target.description
+                target.description = new_desc
+                target.rephrased = True
+
+        # Process GAP_SKIP markers — resolve the gap with an N/A note
+        for skip_reason in re.findall(r'<<GAP_SKIP:\s*(.*?)\s*>>', raw, re.DOTALL):
+            # Match against the last-mentioned gap keywords
+            target = self._match_gap_by_keyword(skip_reason.strip(), unresolved_snapshot)
+            if target:
+                target.resolved = True
+                target.resolution = "N/A — not applicable to this SME's role"
+                unresolved_snapshot = [g for g in unresolved_snapshot if g is not target]
+
         all_done = "<<ALL_GAPS_RESOLVED>>" in raw or len(self.remaining_gaps) == 0
 
-        # Strip internal markers before showing to the user
+        # Strip all internal markers before showing to the user
         clean = re.sub(r'<<GAP_RESOLVED:.*?>>', '', raw, flags=re.DOTALL)
+        clean = re.sub(r'<<GAP_REPHRASE:.*?>>', '', clean, flags=re.DOTALL)
+        clean = re.sub(r'<<GAP_SKIP:.*?>>', '', clean, flags=re.DOTALL)
         clean = re.sub(r'<<ALL_GAPS_RESOLVED>>', '', clean).strip()
 
         # Append a soft follow-up when we couldn't match a resolution to any gap
@@ -551,6 +586,37 @@ class ConversationalAgent:
             if score > best_score:
                 best, best_score = a, score
         return best
+
+    # ── Gap management (rephrase / skip) ──────────────────────────────────────
+
+    def rephrase_gap(self, gap: GapItem) -> None:
+        """Ask the LLM to rewrite a gap so it is answerable by the current SME.
+
+        Updates gap.description in-place and sets gap.rephrased = True.
+        """
+        sme_context = self._audience_note or "a business operations user"
+        prompt = (
+            f"A documentation gap was written assuming a technical reader, but the SME "
+            f"being interviewed is:\n{sme_context}\n\n"
+            f"Original gap:\n{gap.description}\n\n"
+            f"Rewrite this gap to ask about the same topic from what this SME directly "
+            f"observes, does, or experiences — not internal system behavior or technical "
+            f"details invisible to them.\n\n"
+            f"Example:\n"
+            f"  Before: 'Audit logging write failure when RECOVERY-OPT=1 — program behavior?'\n"
+            f"  After:  'What message appears on your screen when the system cannot save "
+            f"changes, and what steps do you take?'\n\n"
+            f"Return ONLY the rephrased gap — one sentence, no quotes, no explanation."
+        )
+        new_desc = self.llm.query(prompt, max_tokens=200).strip()
+        gap.original_description = gap.original_description or gap.description
+        gap.description = new_desc
+        gap.rephrased = True
+
+    def skip_gap(self, gap: GapItem) -> None:
+        """Mark a gap as not applicable to this SME and resolve it."""
+        gap.resolved = True
+        gap.resolution = "N/A — not applicable to this SME's role"
 
     # ── Turn context ───────────────────────────────────────────────────────────
 
