@@ -66,15 +66,41 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
-    # JCL DD statement referencing a CT1 partitioned dataset member.
-    # Example: //SYSIN DD DSN=CMNPPO.PRODSHRP.CT1(CIMPCMS1),DISP=SHR
-    # The member name (CIMPCMS1) is the stem of the dependent .CT1 file.
-    # Requires at least one high-level qualifier before ".CT1(" to avoid
-    # matching bare CT1(...) in unrelated contexts.
+    # EXEC CICS LOAD PROGRAM(<name>) — dynamic program loading at runtime
     (
-        "DD DSN CT1",
+        "EXEC CICS LOAD",
         re.compile(
-            r"DSN=(?:[\w\$\#@\-]+\.)+CT1\s*\(\s*(?P<member>[\w\$\#@\-]+)\s*\)",
+            r"EXEC\s+CICS\s+LOAD\s+PROGRAM\s*\(\s*(?P<program>['\"]?[\w\$\-\.#@]+['\"]?)\s*\)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    # CANCEL '<literal>' / CANCEL identifier
+    # Marks a program that was previously CALLed and is being released.
+    # Implies a load-time dependency on the named program.
+    (
+        "CANCEL",
+        re.compile(
+            r"^\s{0,6}(?!\*)\s*"
+            r"CANCEL\s+"
+            r"(?P<target>['\"][\w\$\-\.#@]+['\"]|[\w\$\-\.#@]+)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    # JCL EXEC PGM=<program> — job step that executes a program.
+    # _strip_sequence_area blanks cols 1-6, so the leading "//" is gone by
+    # the time patterns run; EXEC PGM= is still present in the remaining text.
+    (
+        "EXEC PGM",
+        re.compile(
+            r"EXEC\s+PGM=(?P<program>[\w\$\#@\-]+)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    # JCL EXEC PROC=<proc> — job step that calls a named JCL procedure.
+    (
+        "EXEC PROC",
+        re.compile(
+            r"EXEC\s+PROC=(?P<program>[\w\$\#@\-]+)",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
@@ -105,6 +131,23 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
 ]
 
 TARGET_EXTENSIONS = {".CIC", ".CPY", ".MPS", ".SRC", ".CT1", ".JCV", ".PRV"}
+
+# JCL DD DSN member references for every tracked source-file extension.
+# Example: //SYSIN DD DSN=CMNPPO.PRODSHRP.CT1(CIMPCMS1),DISP=SHR
+# The member name (e.g. CIMPCMS1) is the stem of the dependent file.
+# Requires at least one high-level qualifier before the extension keyword
+# to avoid false matches on bare EXT(...) constructs in COBOL source.
+_DD_DSN_MEMBER_EXTS = ("CT1", "MPS", "CIC", "SRC", "PRV", "CPY")
+DEPENDENCY_PATTERNS.extend(
+    (
+        f"DD DSN {ext}",
+        re.compile(
+            rf"DSN=(?:[\w\$\#@\-]+\.)+{ext}\s*\(\s*(?P<member>[\w\$\#@\-]+)\s*\)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    )
+    for ext in _DD_DSN_MEMBER_EXTS
+)
 
 
 # ---------------------------------------------------------------------------

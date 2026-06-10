@@ -2,6 +2,9 @@
 
 import json
 import re
+from collections import defaultdict
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 from typing import List, Dict, Optional
 from dataclasses import dataclass, field
 from src.document_loaders import DocumentContent
@@ -9,6 +12,28 @@ from src.llm_integration import AzureLLMClient, PromptBuilder
 
 # Broad pattern catches well-formed [ref:3] AND malformed [ref:3: extra text]
 _REF_RE = re.compile(r'\[ref:(\d+)[^\]]*\]', re.IGNORECASE)
+
+_CHUNK_CHARS = 5_000
+_MAX_FILES_PER_CLUSTER = 15
+_VERIFY_WORKERS = 3
+
+_STOP_WORDS = frozenset({
+    "the", "a", "an", "is", "in", "of", "to", "and", "or", "for", "with",
+    "that", "this", "it", "be", "are", "was", "not", "has", "have", "does",
+    "do", "on", "at", "by", "from", "as", "its", "which", "what", "how",
+    "when", "where", "who", "will", "can", "may", "should", "no", "any",
+    "all", "there", "their", "they", "we", "our", "if", "but", "so",
+})
+
+# Maps ProcessDocument field names → keywords that suggest a gap belongs there
+_DOC_SECTION_KEYWORDS: dict[str, list[str]] = {
+    "data_flow": ["data", "flow", "input", "output", "transfer", "feed", "pipe", "file", "record"],
+    "decision_points": ["decision", "rule", "condition", "branch", "logic", "validate", "check"],
+    "dependencies": ["depend", "require", "external", "interface", "api", "call", "invoke", "library"],
+    "integrated_processes": ["process", "workflow", "step", "procedure", "integration", "sequence"],
+    "systems_and_components": ["system", "component", "module", "service", "application", "program"],
+    "overview": ["overview", "purpose", "objective", "goal", "scope", "background"],
+}
 
 
 @dataclass
@@ -468,82 +493,246 @@ class GapAnalyzer:
         )
 
 
-    def verify_gaps_against_summaries(
+    def _find_gap_cluster(
         self,
-        gap_analysis: GapAnalysis,
+        gap_desc: str,
+        process_doc: ProcessDocument,
         cluster_summaries: list,
-    ) -> GapAnalysis:
-        """Cross-check ranked gaps against original cluster summaries.
+    ):
+        """Return the ClusterSummary most relevant to gap_desc, or None."""
+        if not cluster_summaries:
+            return None
 
-        A gap that is addressed in the source summaries is a documentation miss —
-        the source material covers it but the process document did not capture it.
-        A gap absent from the source summaries is a true gap the SME must fill.
+        # Citation markers take priority: [ref:N] or bare [N] in the gap text
+        ref_nums = set(re.findall(r'\[(?:ref:)?(\d+)\]', gap_desc, re.IGNORECASE))
+        if ref_nums and process_doc.citations:
+            for rn in ref_nums:
+                key = f"ref:{rn}"
+                if key in process_doc.citations:
+                    target_name = process_doc.citations[key].get("cluster_name", "")
+                    for cs in cluster_summaries:
+                        if cs.cluster_name == target_name:
+                            return cs
 
-        Tags each entry in ranked_gaps with:
-          ``is_doc_miss`` (bool) — True if the source summaries cover this gap.
-          ``verification_note`` (str) — one-sentence explanation.
+        # Keyword overlap fallback
+        tokens = set(re.findall(r'\b[a-zA-Z]{3,}\b', gap_desc.lower())) - _STOP_WORDS
+        if not tokens:
+            return cluster_summaries[0]
 
-        Returns a new GapAnalysis with those fields set on ranked_gaps.
-        Falls back gracefully (no changes) on any LLM or parsing error.
-        """
-        if not gap_analysis.ranked_gaps or not cluster_summaries:
-            return gap_analysis
+        best, best_score = None, -1
+        for cs in cluster_summaries:
+            cs_text = (
+                cs.cluster_name + " "
+                + cs.summary
+                + " " + " ".join(cs.key_processes)
+            ).lower()
+            score = sum(1 for t in tokens if t in cs_text)
+            if score > best_score:
+                best_score, best = score, cs
+        return best
 
-        # Build a concise source-material block (cap each summary to avoid huge prompts)
-        summaries_block = "\n\n".join(
-            f"=== {getattr(cs, 'cluster_name', str(i))} ===\n"
-            f"{getattr(cs, 'summary', '')[:1500]}"
-            for i, cs in enumerate(cluster_summaries[:10])
-        )
+    def _load_cluster_source_content(
+        self,
+        cluster,
+        file_path_map: dict,
+    ) -> str:
+        """Read up to _MAX_FILES_PER_CLUSTER source files, capped at _CHUNK_CHARS each."""
+        parts: list[str] = []
+        for fname in cluster.source_files[:_MAX_FILES_PER_CLUSTER]:
+            path = file_path_map.get(fname)
+            if path is None:
+                continue
+            try:
+                text = Path(path).read_text(errors="replace")[:_CHUNK_CHARS]
+                parts.append(f"--- {fname} ---\n{text}")
+            except Exception:
+                continue
+        return "\n\n".join(parts)
 
-        gaps_block = "\n".join(
-            f"[{i + 1}] {g['description']}"
-            for i, g in enumerate(gap_analysis.ranked_gaps)
-        )
-
+    def _verify_cluster_gaps(
+        self,
+        cluster_name: str,
+        source_content: str,
+        gap_descs: list,
+    ) -> list:
+        """LLM call: for each gap, decide if it's a doc miss or a true gap."""
+        gaps_block = "\n".join(f"[{i + 1}] {d}" for i, d in enumerate(gap_descs))
         prompt = (
-            "Below are summaries of the original source documents, followed by documentation "
-            "gaps found in a generated process document.\n\n"
-            "For each gap decide: does the source material above actually address or cover "
-            "this topic with substantive detail?\n"
-            "  - covered_in_source = true  → the source docs have the information; the process "
-            "document generation simply missed capturing it (documentation miss).\n"
-            "  - covered_in_source = false → the information is genuinely absent from the source "
-            "docs and a subject-matter expert must fill it in.\n\n"
-            f"Source Document Summaries:\n{summaries_block}\n\n"
-            f"Gaps:\n{gaps_block}\n\n"
-            "Return a JSON array with one object per gap, in the same order:\n"
-            '[{"index":1,"covered_in_source":true,"note":"one sentence reason"},...]\n'
+            "You are reviewing source documents to determine whether documented gaps are "
+            "true gaps or documentation misses.\n\n"
+            f"Source files from cluster '{cluster_name}':\n"
+            f"<source>\n{source_content}\n</source>\n\n"
+            f"Gaps to verify:\n{gaps_block}\n\n"
+            "For each gap decide:\n"
+            "- is_doc_miss: true  → source files contain enough information to answer this gap "
+            "(it was missed during summarization, not a true gap)\n"
+            "- is_doc_miss: false → source files do NOT contain the information "
+            "(genuine gap that a subject-matter expert must fill)\n"
+            "- note: one sentence explaining your finding\n"
+            "- patch_hint: if is_doc_miss=true, quote the relevant content from the source files "
+            "(max 300 chars); otherwise empty string\n\n"
+            "Return a JSON array with one object per gap in the same order:\n"
+            '[{"index":1,"is_doc_miss":true,"note":"...","patch_hint":"..."},...]\n'
             "Return ONLY valid JSON."
         )
-
+        _empty = [
+            {"index": i + 1, "is_doc_miss": False, "note": "", "patch_hint": ""}
+            for i in range(len(gap_descs))
+        ]
         try:
             result = self.llm.query(
                 prompt,
-                max_tokens=min(4000, len(gap_analysis.ranked_gaps) * 120 + 500),
+                max_tokens=min(6000, len(gap_descs) * 200 + 1000),
             )
             m = re.search(r'\[[\s\S]*\]', result)
             if not m:
-                return gap_analysis
+                return _empty
             verdicts = json.loads(m.group())
-            if not isinstance(verdicts, list) or len(verdicts) != len(gap_analysis.ranked_gaps):
-                return gap_analysis
-
-            updated = []
-            for g, v in zip(gap_analysis.ranked_gaps, verdicts):
-                updated.append({
-                    **g,
-                    "is_doc_miss": bool(v.get("covered_in_source", False)),
-                    "verification_note": str(v.get("note", "")).strip(),
-                })
-            return GapAnalysis(
-                gaps_by_category=gap_analysis.gaps_by_category,
-                edge_cases=gap_analysis.edge_cases,
-                resource_gaps=gap_analysis.resource_gaps,
-                ranked_gaps=updated,
-            )
+            return verdicts if isinstance(verdicts, list) else _empty
         except Exception:
-            return gap_analysis
+            return _empty
+
+    def _patch_cluster_summary(self, cluster, missed_hints: list) -> None:
+        """Update cluster.summary (and technical_summary for code clusters) in-place."""
+        if not missed_hints:
+            return
+        hints_block = "\n".join(f"- {h}" for h in missed_hints if h)
+        prompt = (
+            "Update the cluster summary below to incorporate the following missed topics. "
+            "Keep the same structure and tone. Add only what is missing.\n\n"
+            f"Current summary:\n{cluster.summary}\n\n"
+            f"Missed topics to incorporate:\n{hints_block}\n\n"
+            "Return ONLY the updated summary text."
+        )
+        try:
+            updated = self.llm.query(prompt, max_tokens=2000).strip()
+            if updated:
+                cluster.summary = updated
+            if cluster.cluster_type in ("cobol", "mixed") and cluster.technical_summary:
+                tech_prompt = (
+                    "Update the technical summary below to incorporate the following missed topics.\n\n"
+                    f"Current technical summary:\n{cluster.technical_summary}\n\n"
+                    f"Missed topics:\n{hints_block}\n\n"
+                    "Return ONLY the updated technical summary text."
+                )
+                updated_tech = self.llm.query(tech_prompt, max_tokens=1500).strip()
+                if updated_tech:
+                    cluster.technical_summary = updated_tech
+        except Exception:
+            pass
+
+    def _patch_process_doc_section(
+        self,
+        process_doc: ProcessDocument,
+        gap_desc: str,
+        patch_hint: str,
+    ) -> str:
+        """Append patch_hint to the most relevant ProcessDocument section. Returns field name."""
+        if not patch_hint:
+            return ""
+        tokens = set(re.findall(r'\b[a-zA-Z]{3,}\b', gap_desc.lower())) - _STOP_WORDS
+        best_section = "appendix"
+        best_score = 0
+        for section, keywords in _DOC_SECTION_KEYWORDS.items():
+            score = sum(1 for k in keywords if k in tokens)
+            if score > best_score:
+                best_score, best_section = score, section
+        current = getattr(process_doc, best_section, "") or ""
+        sep = "\n\n" if current else ""
+        setattr(process_doc, best_section, current + sep + f"[Gap Verification] {patch_hint}")
+        return best_section
+
+    def verify_and_fix_gaps(
+        self,
+        gap_analysis: GapAnalysis,
+        process_doc: ProcessDocument,
+        cluster_summaries: list,
+        file_path_map: dict,
+    ) -> tuple:
+        """Verify ranked gaps against actual source files; patch summaries and process doc.
+
+        For each gap, locates the most relevant cluster, loads its source files,
+        and asks the LLM whether the gap is a true gap or a documentation miss.
+        Misses are patched into the cluster summary and process document in-place.
+
+        Returns:
+            (GapAnalysis, ProcessDocument, list[ClusterSummary], int)
+            where int is the number of doc-miss fixes applied.
+        Falls back gracefully on any error — never raises.
+        """
+        if not gap_analysis.ranked_gaps or not cluster_summaries:
+            return gap_analysis, process_doc, cluster_summaries, 0
+
+        # Map each gap to its most relevant cluster
+        cluster_gap_groups: dict[str, list] = defaultdict(list)
+        cluster_by_id: dict[str, object] = {}
+        for i, gap in enumerate(gap_analysis.ranked_gaps):
+            cs = self._find_gap_cluster(gap["description"], process_doc, cluster_summaries)
+            if cs is not None:
+                cluster_gap_groups[cs.cluster_id].append((i, gap["description"]))
+                cluster_by_id[cs.cluster_id] = cs
+
+        updated_gaps = list(gap_analysis.ranked_gaps)
+        fix_count = 0
+
+        def _process_cluster(cluster_id: str) -> dict:
+            cs = cluster_by_id[cluster_id]
+            source_content = self._load_cluster_source_content(cs, file_path_map)
+            if not source_content:
+                return {"cluster_id": cluster_id, "verdicts": []}
+            gap_descs = [d for _, d in cluster_gap_groups[cluster_id]]
+            verdicts = self._verify_cluster_gaps(cs.cluster_name, source_content, gap_descs)
+            return {
+                "cluster_id": cluster_id,
+                "cluster": cs,
+                "gaps": cluster_gap_groups[cluster_id],
+                "verdicts": verdicts,
+            }
+
+        with ThreadPoolExecutor(max_workers=_VERIFY_WORKERS) as executor:
+            futures = {
+                executor.submit(_process_cluster, cid): cid
+                for cid in cluster_gap_groups
+            }
+            results = []
+            for future in as_completed(futures):
+                try:
+                    results.append(future.result())
+                except Exception:
+                    pass
+
+        for result in results:
+            verdicts = result.get("verdicts") or []
+            if not verdicts:
+                continue
+            cs = result.get("cluster")
+            gaps = result.get("gaps", [])
+            missed_hints: list[str] = []
+
+            for (gap_idx, gap_desc), verdict in zip(gaps, verdicts):
+                is_miss = bool(verdict.get("is_doc_miss", False))
+                note = str(verdict.get("note", "")).strip()
+                hint = str(verdict.get("patch_hint", "")).strip()
+                updated_gaps[gap_idx] = {
+                    **updated_gaps[gap_idx],
+                    "is_doc_miss": is_miss,
+                    "verification_note": note,
+                }
+                if is_miss and hint:
+                    missed_hints.append(hint)
+                    self._patch_process_doc_section(process_doc, gap_desc, hint)
+                    fix_count += 1
+
+            if cs is not None and missed_hints:
+                self._patch_cluster_summary(cs, missed_hints)
+
+        updated_analysis = GapAnalysis(
+            gaps_by_category=gap_analysis.gaps_by_category,
+            edge_cases=gap_analysis.edge_cases,
+            resource_gaps=gap_analysis.resource_gaps,
+            ranked_gaps=updated_gaps,
+        )
+        return updated_analysis, process_doc, cluster_summaries, fix_count
 
 
 class ClarificationQuestionGenerator:

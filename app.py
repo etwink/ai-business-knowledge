@@ -1029,11 +1029,33 @@ def render_gap_analysis_page():
                 cluster_edge_cases=_cluster_edge_cases or None,
             )
 
+        _fix_count = 0
         if st.session_state.bulk_cluster_summaries:
             with st.spinner("Verifying gaps against source documents…"):
-                st.session_state.gap_analysis = gap_analyzer.verify_gaps_against_summaries(
+                _file_path_map: dict = {}
+                _bulk_scanned = st.session_state.get("bulk_scanned")
+                if _bulk_scanned:
+                    for _p in (
+                        _bulk_scanned.cobol
+                        + _bulk_scanned.code
+                        + _bulk_scanned.word
+                        + _bulk_scanned.excel
+                    ):
+                        _file_path_map[_p.name] = _p
+                for _f in st.session_state.get("uploaded_files", []):
+                    if isinstance(_f, Path):
+                        _file_path_map[_f.name] = _f
+
+                (
                     st.session_state.gap_analysis,
+                    st.session_state.process_document,
                     st.session_state.bulk_cluster_summaries,
+                    _fix_count,
+                ) = gap_analyzer.verify_and_fix_gaps(
+                    st.session_state.gap_analysis,
+                    st.session_state.process_document,
+                    st.session_state.bulk_cluster_summaries,
+                    _file_path_map,
                 )
 
         try:
@@ -1042,6 +1064,24 @@ def render_gap_analysis_page():
                 st.session_state.gap_analysis,
                 version="v1"
             )
+            if _fix_count > 0:
+                try:
+                    st.session_state.storage.save_process_document(
+                        _ensure_session(),
+                        st.session_state.process_document,
+                        version="v1",
+                    )
+                    st.session_state.storage.save_cluster_summaries(
+                        _ensure_session(),
+                        st.session_state.bulk_cluster_summaries,
+                    )
+                except Exception:
+                    pass
+                st.info(
+                    f"During gap analysis, **{_fix_count} documentation miss(es)** were identified "
+                    "and patched into cluster summaries and the process document. "
+                    "We recommend **rebuilding your process document** to ensure full consistency."
+                )
             st.success(f"✅ Gap analysis complete and saved to session: **{st.session_state.current_session}**")
         except Exception as e:
             st.error(f"Error saving gap analysis: {str(e)}")
