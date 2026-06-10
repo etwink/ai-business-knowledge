@@ -17,6 +17,7 @@ from pathlib import Path
 from cobol_dependency_analyzer import (
     parse_file,
     build_dependency_graph,
+    find_missing_dependencies,
     find_transitive_dependencies,
 )
 
@@ -85,6 +86,7 @@ class ClusterBuilder:
     def __init__(self):
         from src.llm_integration import AzureLLMClient
         self.llm = AzureLLMClient()
+        self.missing_dependencies: dict[str, list[str]] = {}
 
     # ------------------------------------------------------------------
     # Public API
@@ -124,6 +126,7 @@ class ClusterBuilder:
 
         analyses = [parse_file(p) for p in cobol_files]
         graph = build_dependency_graph(analyses)
+        self.missing_dependencies = find_missing_dependencies(analyses, graph)
 
         # Identify entry points: files that appear as a source but are never
         # someone else's target (i.e. nothing calls them).

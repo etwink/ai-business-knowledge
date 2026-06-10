@@ -57,6 +57,8 @@ def initialize_session():
         st.session_state.bulk_clusters = None       # list[DocumentCluster]
     if 'bulk_cluster_summaries' not in st.session_state:
         st.session_state.bulk_cluster_summaries = None  # list[ClusterSummary]
+    if 'bulk_missing_deps' not in st.session_state:
+        st.session_state.bulk_missing_deps = {}         # {missing_stem: [referencing_stems]}
     # Process context state (set before analysis to guide the LLM)
     if 'process_context' not in st.session_state:
         st.session_state.process_context = None    # ProcessContext | None
@@ -622,6 +624,7 @@ def render_group_documents_page():
                         code_files=code,
                         context_block=ctx_block,
                     )
+                    st.session_state.bulk_missing_deps = builder.missing_dependencies
                     st.session_state.bulk_cluster_summaries = None
                     try:
                         _session = _ensure_session()
@@ -657,9 +660,23 @@ def render_group_documents_page():
                                  ", ".join(p.name for p in cl.shared_doc_files[:10]) +
                                  ("…" if len(cl.shared_doc_files) > 10 else ""))
 
+            missing_deps = st.session_state.get("bulk_missing_deps", {})
+            if missing_deps:
+                with st.expander(f"⚠️ Missing dependencies ({len(missing_deps)})", expanded=False):
+                    st.caption(
+                        "These names were referenced in COBOL source files (via COPY, CALL, "
+                        "EXEC SQL INCLUDE, etc.) but no matching file was found in the scanned "
+                        "catalogue. They may be external programs, system copybooks, or files "
+                        "that were not included in the scan."
+                    )
+                    for dep_name, refs in sorted(missing_deps.items()):
+                        ref_str = ", ".join(sorted(set(refs)))
+                        st.write(f"**{dep_name}** — referenced by: {ref_str}")
+
             if st.button("🔄 Re-cluster (clear and rebuild)"):
                 st.session_state.bulk_clusters = None
                 st.session_state.bulk_cluster_summaries = None
+                st.session_state.bulk_missing_deps = {}
                 st.rerun()
 
     # ── Step 4: Summarise clusters ────────────────────────────────────────────

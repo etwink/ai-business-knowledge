@@ -243,6 +243,25 @@ def scan_directory(
 # Dependency graph helpers
 # ---------------------------------------------------------------------------
 
+def find_missing_dependencies(
+    analyses: list[FileAnalysis],
+    graph: dict[str, list[dict]],
+) -> dict[str, list[str]]:
+    """Return {missing_stem: [source_stems_that_reference_it]}.
+
+    A dependency is "missing" when its resolved target does not appear as a key
+    in *graph* — meaning no scanned file has that stem.
+    """
+    known = set(graph.keys())
+    missing: dict[str, list[str]] = defaultdict(list)
+    for analysis in analyses:
+        src = analysis.path.stem.upper()
+        for dep in analysis.dependencies:
+            if dep.resolved_target not in known:
+                missing[dep.resolved_target].append(src)
+    return dict(missing)
+
+
 def build_dependency_graph(
     analyses: list[FileAnalysis],
 ) -> dict[str, list[dict]]:
