@@ -292,6 +292,11 @@ _RANKING_SYSTEM = (
     "to address. Return ONLY a JSON array of integers."
 )
 
+# Edge cases and error-handling gaps are rare by definition; cap their scores
+# so they don't crowd out structural or compliance gaps in the ranked list.
+_EDGE_ERROR_CAP = 6
+_EDGE_ERROR_KEYWORDS = ("edge", "error", "exception")
+
 
 class GapAnalyzer:
     """
@@ -419,6 +424,9 @@ class GapAnalyzer:
             "7–9 = High (significant process failure risk, compliance issue)\n"
             "4–6 = Medium (process inefficiency, documentation clarity issue)\n"
             "1–3 = Low (minor improvement, cosmetic)\n\n"
+            "IMPORTANT: Edge case and error/exception handling gaps should score no higher than "
+            f"{_EDGE_ERROR_CAP} unless the scenario would cause a major cascading system failure. "
+            "These scenarios are rare by definition and should not crowd out structural or compliance gaps.\n\n"
             f"Gaps:\n{lines}\n\n"
             "Return ONLY a JSON integer array ordered by Gap Number (where the rating of Gap Number 1 is at index = 0 in the JSON integer array, rating of Gap Number 2 is at index = 1, etc.). "
             "Example for 4 gaps: [8, 3, 7, 5]"
@@ -439,7 +447,13 @@ class GapAnalyzer:
                     and all(isinstance(s, (int, float)) for s in scores)
                 ):
                     ranked = [
-                        {**g, "importance": max(1, min(10, int(float(s))))}
+                        {**g, "importance": min(
+                            max(1, min(10, int(float(s)))),
+                            _EDGE_ERROR_CAP if any(
+                                k in g["category"].lower()
+                                for k in _EDGE_ERROR_KEYWORDS
+                            ) else 10,
+                        )}
                         for g, s in zip(gaps, scores)
                     ]
                     return sorted(ranked, key=lambda x: x["importance"], reverse=True)
@@ -452,6 +466,84 @@ class GapAnalyzer:
             key=lambda x: x["importance"],
             reverse=True,
         )
+
+
+    def verify_gaps_against_summaries(
+        self,
+        gap_analysis: GapAnalysis,
+        cluster_summaries: list,
+    ) -> GapAnalysis:
+        """Cross-check ranked gaps against original cluster summaries.
+
+        A gap that is addressed in the source summaries is a documentation miss —
+        the source material covers it but the process document did not capture it.
+        A gap absent from the source summaries is a true gap the SME must fill.
+
+        Tags each entry in ranked_gaps with:
+          ``is_doc_miss`` (bool) — True if the source summaries cover this gap.
+          ``verification_note`` (str) — one-sentence explanation.
+
+        Returns a new GapAnalysis with those fields set on ranked_gaps.
+        Falls back gracefully (no changes) on any LLM or parsing error.
+        """
+        if not gap_analysis.ranked_gaps or not cluster_summaries:
+            return gap_analysis
+
+        # Build a concise source-material block (cap each summary to avoid huge prompts)
+        summaries_block = "\n\n".join(
+            f"=== {getattr(cs, 'cluster_name', str(i))} ===\n"
+            f"{getattr(cs, 'summary', '')[:1500]}"
+            for i, cs in enumerate(cluster_summaries[:10])
+        )
+
+        gaps_block = "\n".join(
+            f"[{i + 1}] {g['description']}"
+            for i, g in enumerate(gap_analysis.ranked_gaps)
+        )
+
+        prompt = (
+            "Below are summaries of the original source documents, followed by documentation "
+            "gaps found in a generated process document.\n\n"
+            "For each gap decide: does the source material above actually address or cover "
+            "this topic with substantive detail?\n"
+            "  - covered_in_source = true  → the source docs have the information; the process "
+            "document generation simply missed capturing it (documentation miss).\n"
+            "  - covered_in_source = false → the information is genuinely absent from the source "
+            "docs and a subject-matter expert must fill it in.\n\n"
+            f"Source Document Summaries:\n{summaries_block}\n\n"
+            f"Gaps:\n{gaps_block}\n\n"
+            "Return a JSON array with one object per gap, in the same order:\n"
+            '[{"index":1,"covered_in_source":true,"note":"one sentence reason"},...]\n'
+            "Return ONLY valid JSON."
+        )
+
+        try:
+            result = self.llm.query(
+                prompt,
+                max_tokens=min(4000, len(gap_analysis.ranked_gaps) * 120 + 500),
+            )
+            m = re.search(r'\[[\s\S]*\]', result)
+            if not m:
+                return gap_analysis
+            verdicts = json.loads(m.group())
+            if not isinstance(verdicts, list) or len(verdicts) != len(gap_analysis.ranked_gaps):
+                return gap_analysis
+
+            updated = []
+            for g, v in zip(gap_analysis.ranked_gaps, verdicts):
+                updated.append({
+                    **g,
+                    "is_doc_miss": bool(v.get("covered_in_source", False)),
+                    "verification_note": str(v.get("note", "")).strip(),
+                })
+            return GapAnalysis(
+                gaps_by_category=gap_analysis.gaps_by_category,
+                edge_cases=gap_analysis.edge_cases,
+                resource_gaps=gap_analysis.resource_gaps,
+                ranked_gaps=updated,
+            )
+        except Exception:
+            return gap_analysis
 
 
 class ClarificationQuestionGenerator:

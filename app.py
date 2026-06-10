@@ -1006,22 +1006,21 @@ def render_gap_analysis_page():
         return
 
     if st.button("Analyze Gaps", type="primary"):
-        with st.spinner("Analyzing gaps (pass 1 — identifying gaps)…"):
-            gap_analyzer = GapAnalyzer()
-            _audience = st.session_state.get("doc_audience", "new_employee")
-            _sme_role = st.session_state.get("_sme_role_description", "").strip()
-            if _audience == "custom":
-                _base = st.session_state.get("custom_audience_note", "")
-                _audience_note = (_base + "\n\n" + _sme_role).strip() if _sme_role else _base
-            else:
-                _audience_note = _sme_role
-            # Collect edge case hints from cluster summaries (if available)
-            _cluster_edge_cases = []
-            if st.session_state.bulk_cluster_summaries:
-                for _cs in st.session_state.bulk_cluster_summaries:
-                    if hasattr(_cs, "edge_cases"):
-                        _cluster_edge_cases.extend(_cs.edge_cases)
+        gap_analyzer = GapAnalyzer()
+        _audience = st.session_state.get("doc_audience", "new_employee")
+        _sme_role = st.session_state.get("_sme_role_description", "").strip()
+        if _audience == "custom":
+            _base = st.session_state.get("custom_audience_note", "")
+            _audience_note = (_base + "\n\n" + _sme_role).strip() if _sme_role else _base
+        else:
+            _audience_note = _sme_role
+        _cluster_edge_cases = []
+        if st.session_state.bulk_cluster_summaries:
+            for _cs in st.session_state.bulk_cluster_summaries:
+                if hasattr(_cs, "edge_cases"):
+                    _cluster_edge_cases.extend(_cs.edge_cases)
 
+        with st.spinner("Analyzing gaps — identifying gaps…"):
             st.session_state.gap_analysis = gap_analyzer.analyze_gaps(
                 st.session_state.process_document,
                 context_block=_get_context_block(),
@@ -1030,15 +1029,22 @@ def render_gap_analysis_page():
                 cluster_edge_cases=_cluster_edge_cases or None,
             )
 
-            try:
-                st.session_state.storage.save_gap_analysis(
-                    _ensure_session(),
+        if st.session_state.bulk_cluster_summaries:
+            with st.spinner("Verifying gaps against source documents…"):
+                st.session_state.gap_analysis = gap_analyzer.verify_gaps_against_summaries(
                     st.session_state.gap_analysis,
-                    version="v1"
+                    st.session_state.bulk_cluster_summaries,
                 )
-                st.success(f"✅ Gap analysis complete and saved to session: **{st.session_state.current_session}**")
-            except Exception as e:
-                st.error(f"Error saving gap analysis: {str(e)}")
+
+        try:
+            st.session_state.storage.save_gap_analysis(
+                _ensure_session(),
+                st.session_state.gap_analysis,
+                version="v1"
+            )
+            st.success(f"✅ Gap analysis complete and saved to session: **{st.session_state.current_session}**")
+        except Exception as e:
+            st.error(f"Error saving gap analysis: {str(e)}")
 
     if st.session_state.gap_analysis:
         gaps = st.session_state.gap_analysis
@@ -1075,11 +1081,14 @@ def render_gap_analysis_page():
 
         with tab_ranked:
             if gaps.ranked_gaps:
+                _true_gaps = [g for g in gaps.ranked_gaps if not g.get("is_doc_miss", False)]
+                _doc_misses = [g for g in gaps.ranked_gaps if g.get("is_doc_miss", False)]
                 st.caption(
-                    f"{len(gaps.ranked_gaps)} gaps ranked by business importance — "
+                    f"{len(_true_gaps)} gaps ranked by business importance — "
                     "🔴 Critical · 🟠 High · 🟡 Medium · 🟢 Low"
+                    + (f" · {len(_doc_misses)} documentation misses" if _doc_misses else "")
                 )
-                for g in gaps.ranked_gaps:
+                for g in _true_gaps:
                     score = g.get("importance", 5)
                     cat = g.get("category", "")
                     desc = g.get("description", "")
@@ -1089,6 +1098,15 @@ def render_gap_analysis_page():
                         f"{_importance_badge(score)} &nbsp; `{cat}` — {desc}{badge}",
                         unsafe_allow_html=True,
                     )
+                if _doc_misses:
+                    with st.expander(f"📋 Documentation misses ({len(_doc_misses)}) — covered in source docs but missing from process document", expanded=False):
+                        st.caption("These items exist in the source documents but were not captured in the generated process document. They do not need to be filled by the SME — consider re-running the document build to pick them up.")
+                        for g in _doc_misses:
+                            cat = g.get("category", "")
+                            desc = g.get("description", "")
+                            note = g.get("verification_note", "")
+                            note_str = f" *(Source: {note})*" if note else ""
+                            st.markdown(f"- `{cat}` — {desc}{note_str}")
             else:
                 st.info("Run gap analysis to see ranked results.")
 
@@ -1674,9 +1692,12 @@ def _gap_analysis_to_word_bytes(
         meta.add_run(audience_label)
 
     # ── Ranked Gaps ──────────────────────────────────────────────────────────
+    _true_ranked = [g for g in gap_analysis.ranked_gaps if not g.get("is_doc_miss", False)]
+    _miss_ranked = [g for g in gap_analysis.ranked_gaps if g.get("is_doc_miss", False)]
+
     d.add_heading("Ranked Gaps", level=1)
-    if gap_analysis.ranked_gaps:
-        for g in gap_analysis.ranked_gaps:
+    if _true_ranked:
+        for g in _true_ranked:
             score = g.get("importance", 5)
             cat = g.get("category", "")
             desc = g.get("description", "")
@@ -1717,6 +1738,28 @@ def _gap_analysis_to_word_bytes(
 
             d.add_paragraph()
 
+    # ── Documentation Misses ──────────────────────────────────────────────────
+    if _miss_ranked:
+        d.add_heading("Documentation Misses", level=1)
+        d.add_paragraph(
+            "These items are covered in the source documents but were not captured in the "
+            "generated process document. They do not need SME input — consider re-running "
+            "the document build to pick them up."
+        )
+        for g in _miss_ranked:
+            cat = g.get("category", "")
+            desc = g.get("description", "")
+            note = g.get("verification_note", "")
+            p = d.add_paragraph(style="List Bullet")
+            p.add_run(f"[{cat}] ").bold = True
+            p.add_run(desc)
+            if note:
+                note_p = d.add_paragraph(f"Source: {note}")
+                note_p.paragraph_format.left_indent = Pt(24)
+                for r in note_p.runs:
+                    r.italic = True
+                    r.font.size = Pt(9)
+
     # ── Edge Cases ────────────────────────────────────────────────────────────
     if gap_analysis.edge_cases:
         d.add_heading("Edge Cases", level=1)
@@ -1740,9 +1783,73 @@ def _gap_analysis_to_word_bytes(
             p = d.add_paragraph(style="List Bullet")
             p.add_run(rg)
 
+    # ── Reference Index ───────────────────────────────────────────────────────
+    # Collect every [ref:N] or bare [N] marker that appears in gap descriptions
+    # and excerpt passages, then resolve them against the process doc citations.
+    import re as _re
+    _ref_scan_re = _re.compile(r'\[ref:(\d+)[^\]]*\]|\[(\d+)\]', _re.IGNORECASE)
+    _cited_nums: set[str] = set()
+
+    def _scan_refs(text: str) -> None:
+        for _m in _ref_scan_re.finditer(text):
+            _n = _m.group(1) or _m.group(2)
+            if _n:
+                _cited_nums.add(_n)
+
+    for _g in gap_analysis.ranked_gaps:
+        _scan_refs(_g.get("description", ""))
+        for _, _passage in _find_process_doc_excerpts(_g.get("description", ""), process_doc):
+            _scan_refs(_passage)
+    for _ec in gap_analysis.edge_cases:
+        _scan_refs(_ec)
+
+    _resolved = {
+        n: process_doc.citations[f"ref:{n}"]
+        for n in _cited_nums
+        if f"ref:{n}" in process_doc.citations
+    } if process_doc and process_doc.citations else {}
+
+    if _resolved:
+        d.add_heading("References", level=1)
+        d.add_paragraph(
+            "The following source clusters are cited in gap descriptions and source passages above."
+        )
+        for _n, _info in sorted(_resolved.items(), key=lambda kv: int(kv[0])):
+            _cluster_name = _info.get("cluster_name", f"ref:{_n}") if isinstance(_info, dict) else f"ref:{_n}"
+            _files = _info.get("files", []) if isinstance(_info, dict) else []
+            _rp = d.add_paragraph(style="List Bullet")
+            _rl = _rp.add_run(f"[{_n}]  {_cluster_name}")
+            _rl.bold = True
+            if _files:
+                _rp.add_run(" — " + ", ".join(_files))
+
+    _add_footer_page_numbers(d)
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()
+
+
+def _add_footer_page_numbers(d) -> None:
+    """Add a right-aligned page number to the footer of every section."""
+    from docx.enum.text import WD_ALIGN_PARAGRAPH
+    from docx.oxml.ns import qn
+    from docx.oxml import OxmlElement
+
+    for section in d.sections:
+        footer = section.footer
+        footer.is_linked_to_previous = False
+        para = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+        para.alignment = WD_ALIGN_PARAGRAPH.RIGHT
+        run = para.add_run()
+        begin = OxmlElement("w:fldChar")
+        begin.set(qn("w:fldCharType"), "begin")
+        run._r.append(begin)
+        instr = OxmlElement("w:instrText")
+        instr.text = "PAGE"
+        run._r.append(instr)
+        end_el = OxmlElement("w:fldChar")
+        end_el.set(qn("w:fldCharType"), "end")
+        run._r.append(end_el)
 
 
 def _add_content_to_docx(docx, content: str) -> None:
@@ -1838,6 +1945,7 @@ def _chat_to_word_bytes(messages: list[dict], title: str = "Chat Conversation") 
         _add_content_to_docx(d, msg["content"])
         d.add_paragraph()  # blank line between messages
 
+    _add_footer_page_numbers(d)
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()
@@ -1966,6 +2074,7 @@ def _generate_word_doc(doc) -> bytes:
             if files:
                 p.add_run(" — " + ", ".join(files))
 
+    _add_footer_page_numbers(d)
     buf = io.BytesIO()
     d.save(buf)
     return buf.getvalue()
