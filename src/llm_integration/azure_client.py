@@ -34,6 +34,15 @@ class AzureLLMClient:
             config.MODEL_REASONING_EFFORT.lower(), 1.0
         )
 
+    def _record_usage(self, response) -> None:
+        if response.usage:
+            _usage_tracker.record(
+                input_tokens=response.usage.input_tokens,
+                output_tokens=response.usage.output_tokens,
+                reasoning_tokens=getattr(response.usage, "output_tokens_details", None)
+                    and getattr(response.usage.output_tokens_details, "reasoning_tokens", 0) or 0,
+            )
+
     def query(
         self,
         prompt: str,
@@ -69,13 +78,7 @@ class AzureLLMClient:
         )
 
         log_call("query", input_messages, response.output_text, self.deployment_name, budgeted)
-        if response.usage:
-            _usage_tracker.record(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                reasoning_tokens=getattr(response.usage, "output_tokens_details", None)
-                    and getattr(response.usage.output_tokens_details, "reasoning_tokens", 0) or 0,
-            )
+        self._record_usage(response)
         return response.output_text
 
     def query_raw(
@@ -93,13 +96,7 @@ class AzureLLMClient:
             max_output_tokens=budgeted,
         )
         log_call("query_raw", input_messages, response.output_text, self.deployment_name, budgeted)
-        if response.usage:
-            _usage_tracker.record(
-                input_tokens=response.usage.input_tokens,
-                output_tokens=response.usage.output_tokens,
-                reasoning_tokens=getattr(response.usage, "output_tokens_details", None)
-                    and getattr(response.usage.output_tokens_details, "reasoning_tokens", 0) or 0,
-            )
+        self._record_usage(response)
         return response.output_text
 
     def query_with_context(
@@ -612,7 +609,7 @@ Process Document:
     ) -> str:
         """Build a prompt for a single process document section using cluster summaries."""
         combined = "\n\n".join(
-            f"--- Cluster {i+1} ---\n{s}" for i, s in enumerate(cluster_summaries)
+            f"--- Cluster {i+1} ---\n{s}" for i, s in enumerate(cluster_summaries) if s
         )
         instruction = cls._SECTION_INSTRUCTIONS.get(section_key, "Write this section.")
         context_part = f"\n{context_block}\n" if context_block else ""

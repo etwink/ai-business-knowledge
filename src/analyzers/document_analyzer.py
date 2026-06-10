@@ -7,6 +7,9 @@ from dataclasses import dataclass, field
 from src.document_loaders import DocumentContent
 from src.llm_integration import AzureLLMClient, PromptBuilder
 
+# Broad pattern catches well-formed [ref:3] AND malformed [ref:3: extra text]
+_REF_RE = re.compile(r'\[ref:(\d+)[^\]]*\]', re.IGNORECASE)
+
 
 @dataclass
 class AnalysisResult:
@@ -186,15 +189,8 @@ class ProcessDocumentBuilder:
             prompt = prompt_fn(section_key)
             results[section_key] = self.llm.query(prompt, max_tokens=self._TOKENS_PER_SECTION)
         return ProcessDocument(
-            overview=results.get("overview", ""),
-            integrated_processes=results.get("integrated_processes", ""),
-            dependencies=results.get("dependencies", ""),
-            data_flow=results.get("data_flow", ""),
-            decision_points=results.get("decision_points", ""),
-            systems_and_components=results.get("systems_and_components", ""),
-            appendix=results.get("appendix", ""),
-            process_flow_diagram=results.get("process_flow_diagram", ""),
-            process_flow_ascii=results.get("process_flow_ascii", ""),
+            **{k: results.get(k, "") for k in self._SECTIONS},
+            process_flow_ascii="",
             citations={},
         )
 
@@ -209,8 +205,6 @@ class ProcessDocumentBuilder:
         Handles malformed markers like [ref:3: extra text] by matching [ref:N<anything>].
         Returns a new ProcessDocument with [ref:N] → [N] inline and citations populated.
         """
-        # Broad pattern catches well-formed [ref:3] AND malformed [ref:3: extra text]
-        _ref_re = re.compile(r'\[ref:(\d+)[^\]]*\]', re.IGNORECASE)
         _NARRATIVE = (
             "overview", "integrated_processes", "dependencies",
             "data_flow", "decision_points", "systems_and_components",
@@ -219,7 +213,7 @@ class ProcessDocumentBuilder:
         # Collect every cluster index referenced across all narrative sections
         referenced: set[int] = set()
         for field_name in _NARRATIVE:
-            for m in _ref_re.finditer(getattr(doc, field_name, "")):
+            for m in _REF_RE.finditer(getattr(doc, field_name, "")):
                 referenced.add(int(m.group(1)))
 
         if not referenced:
@@ -234,7 +228,7 @@ class ProcessDocumentBuilder:
 
         # Convert [ref:N...] → [N] so inline anchors remain visible in the document
         def _clean(text: str) -> str:
-            return _ref_re.sub(lambda m: f"[{m.group(1)}]", text).strip()
+            return _REF_RE.sub(lambda m: f"[{m.group(1)}]", text).strip()
 
         return ProcessDocument(
             overview=_clean(doc.overview),
@@ -296,7 +290,7 @@ class GapAnalyzer:
         if context_block:
             prompt = context_block + "\n\n" + prompt
 
-        gap_response = self.llm.query(prompt, max_tokens=len(doc_text) // 2)  # heuristic: allow half the tokens of the input document for the gap analysis response
+        gap_response = self.llm.query(prompt, max_tokens=min(8000, max(4000, len(doc_text) // 8)))
         gaps_by_category, edge_cases, resource_gaps = self._parse_gap_response(gap_response)
 
         # Build flat list of all gaps for the ranking pass

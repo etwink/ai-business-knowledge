@@ -495,10 +495,8 @@ def render_group_documents_page():
         "Both chat agents talk **to** this audience."
     )
     _current_staging = st.session_state.get("_audience_staging", "new_employee")
-    _main_groups = [(g, keys) for g, keys in AUDIENCE_GROUPS.items() if g != "Other"]
-    _other_keys  = AUDIENCE_GROUPS.get("Other", [])
-    _group_cols  = st.columns(len(_main_groups))
-    for _col, (_gname, _gkeys) in zip(_group_cols, _main_groups):
+    _group_cols = st.columns(len(AUDIENCE_GROUPS))
+    for _col, (_gname, _gkeys) in zip(_group_cols, AUDIENCE_GROUPS.items()):
         with _col:
             st.caption(f"**{_gname}**")
             for _key in _gkeys:
@@ -510,14 +508,6 @@ def render_group_documents_page():
                 ):
                     st.session_state._audience_staging = _key
                     st.rerun()
-    for _key in _other_keys:
-        if st.button(
-            AUDIENCE_LABELS[_key],
-            key=f"_aud_btn_{_key}",
-            type="primary" if _current_staging == _key else "secondary",
-        ):
-            st.session_state._audience_staging = _key
-            st.rerun()
     _staged_desc = AUDIENCE_DESCRIPTIONS.get(_current_staging, "")
     if _staged_desc:
         st.caption(f"*{_staged_desc}*")
@@ -687,6 +677,9 @@ def render_group_documents_page():
                         context_block=ctx_block,
                     )
                     st.session_state.bulk_cluster_summaries = summaries
+                    # ConversationalAgent and _map_gaps_to_clusters expect AnalysisResult
+                    # objects; convert each ClusterSummary to a minimal AnalysisResult so
+                    # both interfaces stay consistent without refactoring their signatures.
                     st.session_state.analyses = [
                         AnalysisResult(
                             document_name=cs.cluster_name,
@@ -1673,6 +1666,7 @@ def _add_content_to_docx(docx, content: str) -> None:
             docx.add_paragraph(text)
 
 
+@st.cache_data(show_spinner=False)
 def _mermaid_to_png(mermaid_code: str) -> bytes | None:
     """Fetch a PNG render of Mermaid syntax from the mermaid.ink public API."""
     import base64
@@ -1750,18 +1744,18 @@ def _diagram_layout(png_bytes: bytes) -> "tuple[float, str | None, bool]":
     Tier 1 — portrait letter  : fits at 6.5" wide within 9" tall  → no note
     Tier 2 — portrait legal   : fits at 6.5" wide within 12.5" tall → suggest legal paper
     Tier 3 — tabloid landscape: everything else → landscape 11×17 section + paper note
-    Falls back to (6.5, None, False) if PIL is not installed or the image is unreadable.
+    Falls back to (6.5, None, False) if the PNG header cannot be read.
     """
     try:
-        from PIL import Image
-        import io as _io
-        img = Image.open(_io.BytesIO(png_bytes))
-        img_w, img_h = img.size
+        import struct
+        if len(png_bytes) < 24:
+            return 6.5, None, False
+        img_w, img_h = struct.unpack('>II', png_bytes[16:24])
         if img_w == 0:
             return 6.5, None, False
         aspect = img_h / img_w
     except Exception:
-        return 6.5, None, False  # PIL unavailable — safe default
+        return 6.5, None, False
 
     h_at_portrait = 6.5 * aspect
     if h_at_portrait <= 9.0:
@@ -1774,39 +1768,22 @@ def _diagram_layout(png_bytes: bytes) -> "tuple[float, str | None, bool]":
         return pic_w, 'For best results, print on 11" × 17" paper (landscape).', True
 
 
-def _begin_tabloid_landscape_section(d) -> None:
-    """Insert a next-page section break that ends the preceding portrait section."""
+def _insert_page_section(d, w_twips: str, h_twips: str, margin: str, orient: "str | None" = None) -> None:
+    """Append a section-break paragraph that ends the current section with the given page geometry."""
     from docx.oxml.ns import qn
     from docx.oxml import OxmlElement
     p = d.add_paragraph()
     pPr = p._p.get_or_add_pPr()
     sectPr = OxmlElement('w:sectPr')
     pgSz = OxmlElement('w:pgSz')
-    pgSz.set(qn('w:w'), '12240')   # 8.5" in twips
-    pgSz.set(qn('w:h'), '15840')   # 11" in twips
+    pgSz.set(qn('w:w'), w_twips)
+    pgSz.set(qn('w:h'), h_twips)
+    if orient:
+        pgSz.set(qn('w:orient'), orient)
     sectPr.append(pgSz)
     pgMar = OxmlElement('w:pgMar')
-    for attr, val in [('w:top', '1440'), ('w:right', '1440'), ('w:bottom', '1440'), ('w:left', '1440')]:
-        pgMar.set(qn(attr), val)
-    sectPr.append(pgMar)
-    pPr.append(sectPr)
-
-
-def _end_tabloid_landscape_section(d) -> None:
-    """Insert a next-page section break that ends the tabloid landscape section."""
-    from docx.oxml.ns import qn
-    from docx.oxml import OxmlElement
-    p = d.add_paragraph()
-    pPr = p._p.get_or_add_pPr()
-    sectPr = OxmlElement('w:sectPr')
-    pgSz = OxmlElement('w:pgSz')
-    pgSz.set(qn('w:w'), '24480')   # 17" in twips (landscape width)
-    pgSz.set(qn('w:h'), '15840')   # 11" in twips (landscape height)
-    pgSz.set(qn('w:orient'), 'landscape')
-    sectPr.append(pgSz)
-    pgMar = OxmlElement('w:pgMar')
-    for attr, val in [('w:top', '720'), ('w:right', '720'), ('w:bottom', '720'), ('w:left', '720')]:
-        pgMar.set(qn(attr), val)
+    for attr in ('w:top', 'w:right', 'w:bottom', 'w:left'):
+        pgMar.set(qn(attr), margin)
     sectPr.append(pgMar)
     pPr.append(sectPr)
 
@@ -1841,7 +1818,7 @@ def _generate_word_doc(doc) -> bytes:
         if png:
             pic_w_in, paper_note, use_landscape = _diagram_layout(png)
             if use_landscape:
-                _begin_tabloid_landscape_section(d)
+                _insert_page_section(d, '12240', '15840', '1440')
             d.add_picture(io.BytesIO(png), width=Inches(pic_w_in))
             if paper_note:
                 note_p = d.add_paragraph(paper_note)
@@ -1849,7 +1826,7 @@ def _generate_word_doc(doc) -> bytes:
                     r.italic = True
                     r.font.size = Pt(9)
             if use_landscape:
-                _end_tabloid_landscape_section(d)
+                _insert_page_section(d, '24480', '15840', '720', orient='landscape')
         else:
             d.add_paragraph(
                 "Diagram could not be rendered. "
