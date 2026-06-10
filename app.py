@@ -1,6 +1,7 @@
 """Main Streamlit application for Document Analysis System."""
 
 import streamlit as st
+import dataclasses
 from pathlib import Path
 from datetime import datetime
 from collections import defaultdict
@@ -849,6 +850,18 @@ def render_process_document_page():
                 _render_mermaid(doc.process_flow_diagram, height=560)
                 with st.expander("View / copy Mermaid source"):
                     st.code(doc.process_flow_diagram, language="text")
+                if st.button("🔧 Regenerate Diagram", help="If you see a syntax error above, click to ask the AI to repair the diagram"):
+                    with st.spinner("Repairing diagram syntax…"):
+                        fixed = ProcessDocumentBuilder()._repair_mermaid(doc.process_flow_diagram)
+                    updated = dataclasses.replace(st.session_state.process_document, process_flow_diagram=fixed)
+                    st.session_state.process_document = updated
+                    try:
+                        st.session_state.storage.save_process_document(
+                            _ensure_session(), updated, version="v1"
+                        )
+                    except Exception:
+                        pass
+                    st.rerun()
             with tab_png:
                 with st.spinner("Rendering PNG…"):
                     png_bytes = _mermaid_to_png(doc.process_flow_diagram)

@@ -141,6 +141,45 @@ class ProcessDocumentBuilder:
     ]
     _TOKENS_PER_SECTION = 40000
 
+    _MERMAID_REPAIR_PROMPT = (
+        "The Mermaid flowchart below has a syntax error and will not render. "
+        "Rewrite it as valid Mermaid flowchart TD syntax that describes the same process.\n\n"
+        "Strict rules:\n"
+        "- First line MUST be exactly: flowchart TD\n"
+        "- Process steps: A[Step Name]\n"
+        "- Decision points: B{Condition}\n"
+        "- Data stores: C[(Name)]\n"
+        "- External systems: D([Name])\n"
+        "- Arrows: --> and -->|label|\n"
+        "- Node IDs: short alphanumeric tokens only (A, B, PROC1) — NO hyphens, NO spaces\n"
+        "- Labels must NOT contain: parentheses (), quotes, angle brackets <>, or unmatched braces\n"
+        "- Keep it to 10–20 nodes for readability\n"
+        "- Output ONLY the corrected Mermaid syntax — no markdown fences, no explanation, no prose.\n\n"
+        "Broken code:\n"
+    )
+
+    @staticmethod
+    def _validate_mermaid(code: str) -> bool:
+        """Return True if code looks like structurally valid Mermaid flowchart syntax."""
+        if not code or not code.strip():
+            return False
+        stripped = code.strip()
+        for fence in ("```mermaid", "```"):
+            if stripped.startswith(fence):
+                stripped = stripped[len(fence):]
+        if stripped.endswith("```"):
+            stripped = stripped[:-3]
+        stripped = stripped.strip()
+        first_line = stripped.split('\n')[0].strip()
+        if not re.match(r'^(flowchart|graph)\s+(TD|LR|TB|BT|RL)\b', first_line, re.IGNORECASE):
+            return False
+        content_lines = [l for l in stripped.split('\n') if l.strip() and not l.strip().startswith('%%')]
+        return len(content_lines) >= 3
+
+    def _repair_mermaid(self, bad_code: str) -> str:
+        """Ask the LLM to fix broken Mermaid syntax. Returns the repaired code."""
+        return self.llm.query(self._MERMAID_REPAIR_PROMPT + bad_code, max_tokens=4000)
+
     def __init__(self):
         self.llm = AzureLLMClient()
 
@@ -187,7 +226,12 @@ class ProcessDocumentBuilder:
                 label = section_key.replace("_", " ").title()
                 progress_callback(label, idx + 1, total)
             prompt = prompt_fn(section_key)
-            results[section_key] = self.llm.query(prompt, max_tokens=self._TOKENS_PER_SECTION)
+            output = self.llm.query(prompt, max_tokens=self._TOKENS_PER_SECTION)
+            if section_key == "process_flow_diagram" and not self._validate_mermaid(output):
+                if progress_callback:
+                    progress_callback("Process Flow Diagram (repairing syntax)", idx + 1, total)
+                output = self._repair_mermaid(output)
+            results[section_key] = output
         return ProcessDocument(
             **{k: results.get(k, "") for k in self._SECTIONS},
             process_flow_ascii="",
