@@ -25,6 +25,17 @@ from src.llm_integration import llm_usage_tracker
 import config
 
 
+def _fmt_tokens(n: int) -> str:
+    """Format a token count with 4 significant figures and K/M/B suffix above 100 K."""
+    if n < 100_000:
+        return f"{n:,}"
+    if n < 1_000_000:
+        return f"{n / 1_000:.4g}K"
+    if n < 1_000_000_000:
+        return f"{n / 1_000_000:.4g}M"
+    return f"{n / 1_000_000_000:.4g}B"
+
+
 def initialize_session():
     """Initialize session state variables."""
     if 'uploaded_files' not in st.session_state:
@@ -322,8 +333,8 @@ def render_sidebar():
         if usage["total_calls"] > 0:
             st.caption("**LLM Usage (this session)**")
             c1, c2 = st.columns(2)
-            c1.metric("Input tokens", f"{usage['total_input_tokens']:,}")
-            c2.metric("Output tokens", f"{usage['total_output_tokens']:,}")
+            c1.metric("Input tokens", _fmt_tokens(usage['total_input_tokens']))
+            c2.metric("Output tokens", _fmt_tokens(usage['total_output_tokens']))
             st.caption(
                 f"~**${usage['approximate_cost_usd']:.4f}** "
                 f"({usage['total_calls']} calls) "
