@@ -18,9 +18,11 @@ from dataclasses import dataclass, field
 # Each entry: (dependency_type, compiled_regex)
 # Regex rules:
 #   - COBOL is case-insensitive; we compile with re.IGNORECASE
-#   - Fixed-format COBOL: columns 1-6 are sequence/indicator area; column 7
-#     is the indicator (*  = comment, /  = page eject, D = debug line).
-#     We skip those lines before matching.
+#   - Fixed-format COBOL: columns 1-6 are the sequence/annotation area (often
+#     sequence numbers or developer change markers like "ABC001"). Column 7 is
+#     the indicator (* = comment, / = page eject, D = debug line).
+#     _strip_sequence_area() blanks cols 1-6 before pattern matching so these
+#     patterns always see whitespace there.
 #   - Free-format COBOL (columns 8+) is also handled since we strip leading
 #     whitespace after skipping the indicator column.
 
@@ -30,7 +32,7 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
     (
         "COPY",
         re.compile(
-            r"^\s{0,6}"          # optional sequence area (cols 1-6 may be blank)
+            r"^\s{0,6}"          # sequence area — always blank after _strip_sequence_area
             r"(?!\*)"            # not a comment line (col 7 = *)
             r"\s*"               # indent in Area A/B
             r"COPY\s+"
@@ -48,6 +50,19 @@ DEPENDENCY_PATTERNS: list[tuple[str, re.Pattern]] = [
             r"^\s{0,6}(?!\*)\s*"
             r"CALL\s+"
             r"(?P<target>['\"][\w\$\-\.#@]+['\"]|[\w\$\-\.#@]+)",
+            re.IGNORECASE | re.MULTILINE,
+        ),
+    ),
+    # EXEC SQL INCLUDE <member> END-EXEC
+    # Handles single-line:  EXEC SQL INCLUDE ABCD END-EXEC.
+    # and multi-line:        EXEC SQL
+    #                            INCLUDE ABCD
+    #                        END-EXEC.
+    # \s+ between tokens matches both spaces and newlines.
+    (
+        "EXEC SQL INCLUDE",
+        re.compile(
+            r"EXEC\s+SQL\s+INCLUDE\s+(?P<member>[\w\$\#@\-]+)",
             re.IGNORECASE | re.MULTILINE,
         ),
     ),
@@ -109,6 +124,24 @@ def _strip_quotes(value: str) -> str:
     return value.strip("'\"")
 
 
+def _strip_sequence_area(source: str) -> str:
+    """Return *source* with columns 1–6 (0-indexed: 0–5) blanked in every line.
+
+    Fixed-format COBOL reserves those columns for sequence numbers or developer
+    change markers (e.g. "ABC001"). They carry no code semantics but would
+    prevent patterns anchored to ^ from matching COPY / CALL statements that
+    start at column 8.  Only lines at least 7 characters wide with a non-blank
+    sequence area are modified; shorter or already-blank lines are left alone.
+    """
+    lines = source.splitlines(keepends=True)
+    result = []
+    for line in lines:
+        if len(line) >= 7 and line[:6].strip():
+            line = "      " + line[6:]
+        result.append(line)
+    return "".join(result)
+
+
 def _is_comment_line(line: str) -> bool:
     """
     In fixed-format COBOL column 7 (index 6) is '*' or '/' for comments.
@@ -132,12 +165,13 @@ def parse_file(path: Path) -> FileAnalysis:
         except UnicodeDecodeError:
             source = path.read_text(encoding="latin-1")
 
-        lines = source.splitlines()
+        lines = source.splitlines()  # original lines — used for comment detection
+        parse_source = _strip_sequence_area(source)  # cols 1-6 blanked for pattern matching
 
         for dep_type, pattern in DEPENDENCY_PATTERNS:
-            for match in pattern.finditer(source):
+            for match in pattern.finditer(parse_source):
                 # Determine line number from match start position
-                line_no = source[: match.start()].count("\n") + 1
+                line_no = parse_source[: match.start()].count("\n") + 1
 
                 # Skip if the matched line is a comment
                 matched_line = lines[line_no - 1] if line_no <= len(lines) else ""
