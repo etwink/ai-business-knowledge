@@ -833,17 +833,65 @@ _PLOTLY_PALETTE = [
     "#8C564B", "#E377C2", "#7F7F7F", "#BCBD22", "#17BECF",
 ]
 
+_SIBLING_PALETTE = ["#E74C3C", "#9B59B6", "#F39C12", "#1ABC9C", "#3498DB", "#E67E22"]
 
-def _spring_positions(nodes: list, edges: list, seed: int = 42) -> dict:
-    """Return {node: (x, y)} using networkx spring layout, or circular fallback."""
+
+def _hierarchical_positions(nodes: list, edges: list) -> dict:
+    """Return {node: (x, y)} in a top-down tree layout.
+
+    Roots (in-degree 0) sit at y=0; each dependency level descends by 1.5 units.
+    Nodes at the same level are evenly spaced on the x-axis.
+    Falls back to a circular layout when networkx is unavailable.
+    """
     try:
         import networkx as nx
+        from collections import defaultdict, deque
+
+        node_set = set(nodes)
         G = nx.DiGraph()
         G.add_nodes_from(nodes)
-        G.add_edges_from(e for e in edges if e[0] in G and e[1] in G)
-        k = 2.0 / max(len(nodes) ** 0.5, 1)
-        raw = nx.spring_layout(G, k=k, seed=seed, iterations=80)
-        return {n: (float(raw[n][0]), float(raw[n][1])) for n in nodes if n in raw}
+        for s, t in edges:
+            if s in node_set and t in node_set:
+                G.add_edge(s, t)
+
+        # Longest-path level from any root (BFS, keep updating to max)
+        in_deg = dict(G.in_degree())
+        level: dict = {}
+        roots = [n for n in nodes if in_deg.get(n, 0) == 0]
+        if not roots:
+            roots = [nodes[0]] if nodes else []
+
+        q = deque()
+        for r in roots:
+            level[r] = 0
+            q.append(r)
+        while q:
+            node = q.popleft()
+            for _, child in G.out_edges(node):
+                new_lv = level[node] + 1
+                if child not in level or level[child] < new_lv:
+                    level[child] = new_lv
+                    q.append(child)
+
+        # Disconnected nodes go one row below the deepest connected node
+        max_lv = max(level.values(), default=0)
+        for n in nodes:
+            if n not in level:
+                level[n] = max_lv + 1
+
+        # Group and sort nodes within each level for a stable, readable layout
+        lv_to_nodes: dict = defaultdict(list)
+        for n in nodes:
+            lv_to_nodes[level[n]].append(n)
+
+        max_width = max(len(ns) for ns in lv_to_nodes.values())
+        positions = {}
+        for lv, ns in lv_to_nodes.items():
+            for i, n in enumerate(sorted(ns)):
+                x = (i + 0.5) * max_width / len(ns) - max_width / 2
+                positions[n] = (x, -lv * 1.5)
+        return positions
+
     except ImportError:
         import math
         n = max(len(nodes), 1)
@@ -871,16 +919,47 @@ def _edge_traces(positions: dict, edges: list, color: str = "rgba(150,150,150,0.
     return result
 
 
-def _render_cluster_graph(cluster_info: dict, inter_edges: dict) -> "go.Figure":
+def _render_cluster_graph(
+    cluster_info: dict,
+    inter_edges: dict,
+    sibling_groups: dict | None = None,  # parent_cluster_id → [child_cluster_ids]
+):
     import plotly.graph_objects as go
+
+    sibling_groups = sibling_groups or {}
+
+    # Assign one border color per sibling group
+    sibling_border_color: dict[str, str] = {}
+    for i, siblings in enumerate(sibling_groups.values()):
+        color = _SIBLING_PALETTE[i % len(_SIBLING_PALETTE)]
+        for cid in siblings:
+            sibling_border_color[cid] = color
 
     nodes = list(cluster_info.keys())
     edge_list = list(inter_edges.keys())
-    positions = _spring_positions(nodes, edge_list)
+    positions = _hierarchical_positions(nodes, edge_list)
 
+    traces: list = []
+    annotations: list = []
+
+    # --- Sibling dotted lines (drawn first, so they sit beneath nodes) ---
+    for parent_id, siblings in sibling_groups.items():
+        group_color = sibling_border_color.get(siblings[0], "#888") if siblings else "#888"
+        for i, a in enumerate(siblings):
+            for b in siblings[i + 1:]:
+                if a in positions and b in positions:
+                    x0, y0 = positions[a]
+                    x1, y1 = positions[b]
+                    traces.append(go.Scatter(
+                        x=[x0, x1, None], y=[y0, y1, None],
+                        mode="lines",
+                        line=dict(color=group_color, width=1.5, dash="dot"),
+                        hoverinfo="none",
+                        showlegend=False,
+                    ))
+
+    # --- Dependency edges ---
     max_w = max(inter_edges.values(), default=1)
-    traces = []
-    annotations = []
     for (src, tgt), count in inter_edges.items():
         if src not in positions or tgt not in positions:
             continue
@@ -900,26 +979,40 @@ def _render_cluster_graph(cluster_info: dict, inter_edges: dict) -> "go.Figure":
             arrowcolor="rgba(100,100,100,0.55)", arrowwidth=1.5,
         ))
 
-    node_x, node_y, labels, hovers, colors, sizes = [], [], [], [], [], []
+    # --- Nodes ---
+    node_x, node_y, labels, hovers = [], [], [], []
+    fill_colors, border_colors, border_widths, sizes = [], [], [], []
     for cid, info in cluster_info.items():
         if cid not in positions:
             continue
         x, y = positions[cid]
-        node_x.append(x); node_y.append(y)
+        node_x.append(x)
+        node_y.append(y)
         labels.append(info["name"])
         hovers.append(f"<b>{info['name']}</b><br>Type: {info['type']}<br>Files: {info['file_count']}")
-        colors.append(_CLUSTER_TYPE_COLORS.get(info["type"], "#888"))
-        sizes.append(max(20, 18 + info["file_count"] * 2))
+        fill_colors.append(_CLUSTER_TYPE_COLORS.get(info["type"], "#888"))
+        bc = sibling_border_color.get(cid)
+        border_colors.append(bc if bc else "#ffffff")
+        border_widths.append(3 if bc else 1.5)
+        sizes.append(max(22, 18 + info["file_count"] * 2))
 
     traces.append(go.Scatter(
         x=node_x, y=node_y,
         mode="markers+text",
-        text=labels, textposition="top center", textfont=dict(size=10),
-        marker=dict(color=colors, size=sizes, line=dict(color="white", width=1.5)),
-        hovertext=hovers, hoverinfo="text",
+        text=labels,
+        textposition="top center",
+        textfont=dict(color="#1a1a1a", size=11),
+        marker=dict(
+            color=fill_colors,
+            size=sizes,
+            line=dict(color=border_colors, width=border_widths),
+        ),
+        hovertext=hovers,
+        hoverinfo="text",
         showlegend=False,
     ))
 
+    # --- Legend: cluster types ---
     type_labels = {"cobol": "Source Code", "mixed": "Code + Docs", "docs": "Documents"}
     for ct in sorted({info["type"] for info in cluster_info.values()}):
         traces.append(go.Scatter(
@@ -928,16 +1021,29 @@ def _render_cluster_graph(cluster_info: dict, inter_edges: dict) -> "go.Figure":
             name=type_labels.get(ct, ct),
         ))
 
+    # --- Legend: sibling groups ---
+    for parent_id, siblings in sibling_groups.items():
+        group_color = sibling_border_color.get(siblings[0], "#888") if siblings else "#888"
+        traces.append(go.Scatter(
+            x=[None], y=[None], mode="markers",
+            marker=dict(
+                color="white", size=12, symbol="square",
+                line=dict(color=group_color, width=3),
+            ),
+            name=f"Split: {parent_id}",
+        ))
+
     return go.Figure(
         data=traces,
         layout=go.Layout(
-            height=520,
-            margin=dict(l=20, r=20, t=20, b=20),
+            height=540,
+            margin=dict(l=20, r=20, t=40, b=20),
             xaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             yaxis=dict(showgrid=False, zeroline=False, showticklabels=False),
             plot_bgcolor="white", paper_bgcolor="white",
             annotations=annotations,
-            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1),
+            legend=dict(orientation="h", yanchor="bottom", y=1.01, xanchor="right", x=1,
+                        font=dict(color="#1a1a1a")),
             hovermode="closest",
         ),
     )
@@ -946,13 +1052,13 @@ def _render_cluster_graph(cluster_info: dict, inter_edges: dict) -> "go.Figure":
 def _render_file_graph(
     nodes: list, edges: list, file_to_cluster: dict,
     cluster_info: dict, cluster_summaries: list,
-) -> "go.Figure":
+):
     import plotly.graph_objects as go
 
     if not nodes:
         return go.Figure()
 
-    positions = _spring_positions(nodes, edges)
+    positions = _hierarchical_positions(nodes, edges)
     traces = _edge_traces(positions, edges)
 
     color_map = {
@@ -1054,14 +1160,21 @@ def render_dependency_graph_page():
 
     # ── Cluster graph ────────────────────────────────────────────────────────
     if cluster_summaries:
+        # Build sibling groups: clusters that were split from the same parent
+        sibling_groups: dict[str, list[str]] = defaultdict(list)
+        for cs in cluster_summaries:
+            if getattr(cs, "parent_cluster_id", None):
+                sibling_groups[cs.parent_cluster_id].append(cs.cluster_id)
+
         st.subheader("Cluster Dependency Graph")
         st.caption(
             "Each node is one cluster — size reflects file count. "
             "Arrows point **dependent → dependency** (A → B: something in A calls/copies B). "
-            "Blue = source code only · Green = code + docs · Orange = documents only."
+            "Blue = source code only · Green = code + docs · Orange = documents only. "
+            "Colored borders + dotted lines show clusters split from the same parent."
         )
         st.plotly_chart(
-            _render_cluster_graph(cluster_info, dict(inter_cluster_edges)),
+            _render_cluster_graph(cluster_info, dict(inter_cluster_edges), sibling_groups=dict(sibling_groups)),
             use_container_width=True,
         )
 

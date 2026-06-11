@@ -70,6 +70,10 @@ class DocumentCluster:
     # Docs that matched multiple clusters and are injected as shared context
     # rather than assigned as members.  Not counted in file_count.
     shared_doc_files: list[Path] = field(default_factory=list)
+    # Set when this cluster was produced by splitting an oversized parent.
+    # For COBOL splits this is always populated; for doc clusters it is
+    # LLM-inferred and may be None.
+    parent_cluster_id: str | None = None
 
     @property
     def all_files(self) -> list[Path]:
@@ -207,7 +211,10 @@ class ClusterBuilder:
         for cl in clusters:
             if cl.file_count > _MAX_CLUSTER_FILES:
                 max_size = _compute_cluster_file_limit(cl.all_files, context_block)
-                result.extend(self._split_large_cluster(cl, graph, path_by_stem, max_size=max_size))
+                sub = self._split_large_cluster(cl, graph, path_by_stem, max_size=max_size)
+                for sc in sub:
+                    sc.parent_cluster_id = cl.cluster_id
+                result.extend(sub)
             else:
                 result.append(cl)
         return result
@@ -441,6 +448,12 @@ class ClusterBuilder:
                     doc_files=group["files"],
                 )
             )
+        # Resolve LLM-supplied parent_cluster names to cluster_ids
+        name_to_id = {group["name"]: f"docs_{i}" for i, group in enumerate(groups)}
+        for group, cluster in zip(groups, clusters):
+            parent_name = group.get("parent_cluster")
+            if parent_name and parent_name in name_to_id:
+                cluster.parent_cluster_id = name_to_id[parent_name]
         return clusters
 
 
@@ -544,10 +557,13 @@ Files:
 Return ONLY valid JSON in this exact format (no markdown, no explanation):
 {{
   "clusters": [
-    {{"name": "Descriptive Group Name", "files": ["filename1.docx", "filename2.xlsx"]}},
+    {{"name": "Descriptive Group Name", "files": ["filename1.docx", "filename2.xlsx"], "parent_cluster": null}},
+    {{"name": "Sub-Domain Name", "files": ["filename3.docx"], "parent_cluster": "Descriptive Group Name"}},
     ...
   ]
-}}"""
+}}
+
+For each cluster, optionally set "parent_cluster" to the exact name of another cluster in this list if this cluster is a sub-domain or sub-category of it. Use null if the cluster is top-level. Do not invent parent names — only use names that appear in this response."""
 
 
 def _fallback_cluster_by_type(doc_files: list[Path]) -> list[dict]:
@@ -573,7 +589,7 @@ def _fallback_cluster_by_type(doc_files: list[Path]) -> list[dict]:
         else:
             buckets.setdefault("Supporting Documents", []).append(p)
 
-    return [{"name": name, "files": files} for name, files in buckets.items()]
+    return [{"name": name, "files": files, "parent_cluster": None} for name, files in buckets.items()]
 
 
 def _parse_clustering_response(
@@ -598,12 +614,12 @@ def _parse_clustering_response(
                     files.append(path_by_name[fname])
                     assigned.add(fname)
             if files:
-                groups.append({"name": name, "files": files})
+                groups.append({"name": name, "files": files, "parent_cluster": cluster.get("parent_cluster")})
 
         # Any files not placed by the LLM go into a catch-all
         leftover = [p for p in all_files if p.name not in assigned]
         if leftover:
-            groups.append({"name": "General Documents", "files": leftover})
+            groups.append({"name": "General Documents", "files": leftover, "parent_cluster": None})
 
         return groups
     except (json.JSONDecodeError, KeyError):

@@ -334,6 +334,7 @@ class AnalysisStorage:
                 "entry_point": getattr(cs, "entry_point", None),
                 "edge_cases": getattr(cs, "edge_cases", []),
                 "source_files": getattr(cs, "source_files", []),
+                "parent_cluster_id": getattr(cs, "parent_cluster_id", None),
             })
         file_path = session_dir / "cluster_summaries.json"
         with open(file_path, 'w', encoding='utf-8') as f:
@@ -364,6 +365,7 @@ class AnalysisStorage:
                     entry_point=d.get("entry_point"),
                     edge_cases=d.get("edge_cases", []),
                     source_files=d.get("source_files", []),
+                    parent_cluster_id=d.get("parent_cluster_id"),
                 ))
             return summaries
         except Exception:

@@ -59,6 +59,7 @@ class ClusterSummary:
     entry_point: str | None = None
     edge_cases: list[str] = field(default_factory=list)   # boundary/exception scenarios
     source_files: list[str] = field(default_factory=list) # file names belonging to this cluster
+    parent_cluster_id: str | None = None  # set when produced by splitting an oversized cluster
 
 
 class HierarchicalSummarizer:
@@ -104,6 +105,7 @@ class HierarchicalSummarizer:
                     summary=f"[Summarization failed: {exc}]",
                     file_count=cluster.file_count,
                     source_files=[f.name for f in cluster.all_files],
+                    parent_cluster_id=getattr(cluster, "parent_cluster_id", None),
                 )
             with active_lock:
                 active.remove(cluster.cluster_name)
@@ -167,6 +169,7 @@ class HierarchicalSummarizer:
             entry_point=cluster.entry_point,
             edge_cases=edge_cases,
             source_files=[f.name for f in cluster.all_files],
+            parent_cluster_id=getattr(cluster, "parent_cluster_id", None),
         )
 
     def _synthesize_cobol(
@@ -237,6 +240,7 @@ Be specific to the actual code described above."""
             entry_point=cluster.entry_point,
             edge_cases=edge_cases,
             source_files=[f.name for f in cluster.all_files],
+            parent_cluster_id=getattr(cluster, "parent_cluster_id", None),
         )
 
     def _summarize_doc_files_with_cobol_context(
@@ -389,6 +393,7 @@ Write a unified subsystem summary ({lower}–{upper} words) that integrates both
             file_count=cluster.file_count,
             edge_cases=edge_cases,
             source_files=[f.name for f in cluster.all_files],
+            parent_cluster_id=getattr(cluster, "parent_cluster_id", None),
         )
 
     def _summarize_small_doc_cluster(self, cluster: DocumentCluster, context_block: str = "") -> str:
